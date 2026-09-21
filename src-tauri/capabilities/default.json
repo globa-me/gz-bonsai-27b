@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Permissions for the main Bonsai Desktop window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": ["core:default", "dialog:allow-open", "opener:allow-open-url"]
 }

@@ -36,6 +36,14 @@ struct ModelDefinition {
     context_size: u32,
 }
 
+#[derive(Clone, Copy)]
+struct ProjectorDefinition {
+    url: &'static str,
+    filename: &'static str,
+    size: u64,
+    sha256: &'static str,
+}
+
 const MODELS: [ModelDefinition; 6] = [
     ModelDefinition {
         id: "bonsai-1.7b-q1",
@@ -137,6 +145,9 @@ pub struct CatalogModel {
     context_size: u32,
     installed: bool,
     installed_path: Option<String>,
+    vision_capable: bool,
+    projector_installed: bool,
+    projector_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -172,6 +183,24 @@ fn model_definition(id: &str) -> Result<ModelDefinition, String> {
         .ok_or_else(|| "Unknown model identifier".to_string())
 }
 
+fn projector_definition(model: ModelDefinition) -> Option<ProjectorDefinition> {
+    match model.id {
+        "bonsai-27b-q1" => Some(ProjectorDefinition {
+            url: "https://huggingface.co/prism-ml/Bonsai-27B-gguf/resolve/f10afb355f104535e3e3e98cf7ab7795c72bd292/Bonsai-27B-mmproj-Q8_0.gguf?download=true",
+            filename: "Bonsai-27B-mmproj-Q8_0.gguf",
+            size: 629_246_880,
+            sha256: "eb561d41a7bbeb0fcf04883c8af11078ef6ca0a66862a0b68443cfca495269d",
+        }),
+        "bonsai-2-27b-ptq1" | "bonsai-2-27b-pq2" => Some(ProjectorDefinition {
+            url: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/6ed5e12bf84b7a63069882c91dd9e9218647d17b/Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf?download=true",
+            filename: "Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf",
+            size: 629_246_976,
+            sha256: "6807ede61d570bb86ba34b756a0fa109edc33668604de867c6ea6d8f1d631903",
+        }),
+        _ => None,
+    }
+}
+
 fn managed_root(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
@@ -192,6 +221,10 @@ fn runtime_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn model_path(root: &Path, model: ModelDefinition) -> PathBuf {
     root.join("models").join(model.id).join(model.filename)
+}
+
+fn projector_path(root: &Path, model: ModelDefinition, projector: ProjectorDefinition) -> PathBuf {
+    root.join("models").join(model.id).join(projector.filename)
 }
 
 fn verified_marker(path: &Path) -> PathBuf {
@@ -225,6 +258,12 @@ pub fn managed_catalog(app: AppHandle) -> Result<ManagedCatalog, String> {
             .map(|model| {
                 let path = model_path(&root, model);
                 let installed = is_verified(&path, model.size, model.sha256);
+                let projector = projector_definition(model);
+                let projector_status = projector.map(|definition| {
+                    let path = projector_path(&root, model, definition);
+                    let installed = is_verified(&path, definition.size, definition.sha256);
+                    (installed, installed.then(|| path.display().to_string()))
+                });
                 CatalogModel {
                     id: model.id.into(),
                     name: model.name.into(),
@@ -235,6 +274,9 @@ pub fn managed_catalog(app: AppHandle) -> Result<ManagedCatalog, String> {
                     context_size: model.context_size,
                     installed,
                     installed_path: installed.then(|| path.display().to_string()),
+                    vision_capable: projector.is_some(),
+                    projector_installed: projector_status.as_ref().is_some_and(|value| value.0),
+                    projector_path: projector_status.and_then(|value| value.1),
                 }
             })
             .collect(),
@@ -532,6 +574,58 @@ pub async fn install_model(
 }
 
 #[tauri::command]
+pub async fn install_projector(
+    app: AppHandle,
+    state: State<'_, InstallerState>,
+    request: ModelRequest,
+) -> Result<String, String> {
+    let model = model_definition(&request.model_id)?;
+    let projector = projector_definition(model)
+        .ok_or_else(|| "This model does not support image attachments".to_string())?;
+    let download_id = format!("{}-vision", model.id);
+    let control = register_download(&state, &download_id).await?;
+    let result: Result<String, String> = async {
+        let root = managed_root(&app)?;
+        let destination = projector_path(&root, model, projector);
+        download_file(
+            &app,
+            &state.client,
+            &download_id,
+            projector.url,
+            &destination,
+            projector.size,
+            projector.sha256,
+            &control,
+        )
+        .await?;
+        emit_progress(
+            &app,
+            &download_id,
+            "complete",
+            projector.size,
+            projector.size,
+            None,
+        );
+        Ok(destination.display().to_string())
+    }
+    .await;
+    if let Err(error) = &result {
+        if error != "Download paused" && error != "Download cancelled" {
+            emit_progress(
+                &app,
+                &download_id,
+                "error",
+                0,
+                projector.size,
+                Some(error.clone()),
+            );
+        }
+    }
+    finish_download(&state, &download_id).await;
+    result
+}
+
+#[tauri::command]
 pub async fn pause_install(state: State<'_, InstallerState>, id: String) -> Result<(), String> {
     let active = state.active.lock().await;
     let control = active
@@ -594,6 +688,9 @@ mod tests {
         let apple_ternary =
             model_definition("bonsai-2-27b-pq2").expect("PQ2 ternary 27B must be available");
         assert_eq!(apple_ternary.filename, "Ternary-Bonsai-2-27B-PQ2_0.gguf");
+        assert!(projector_definition(binary).is_some());
+        assert!(projector_definition(compact_ternary).is_some());
+        assert!(projector_definition(model_definition("bonsai-8b-q1").unwrap()).is_none());
     }
 
     #[test]

@@ -4,13 +4,17 @@
 
 ```text
 React UI
+  ├─ IndexedDB chat history
+  ├─ safe Markdown + attachments
   │ Tauri invoke + events
 Rust application core
   ├─ system diagnostics
   ├─ verified download manager
   ├─ lifecycle state machine
   ├─ health polling
-  └─ SSE client
+  ├─ bounded attachment reader
+  ├─ opt-in Bing RSS search
+  └─ SSE client + process RSS telemetry
        │ localhost only
 Signed bundled PrismML llama-server
        │
@@ -19,7 +23,9 @@ GGUF model (+ optional mmproj)
 
 Rust запускает выбранный executable с `--host 127.0.0.1`, проверяет порт, передаёт модель, контекст и Metal offload, затем ждёт успешный `/health`. stdout/stderr поступает в диагностический журнал. Чат отправляется из Rust, а SSE-токены возвращаются событием `chat-token`.
 
-В релизе `0.2.0` совместимый arm64 runtime `prism-b10709-9a9394a` включён как ресурс приложения. Все Mach-O и dylib повторно подписаны Developer ID проекта до подписи app bundle. Это исключает запуск неподписанного скачанного executable. Из сети загружаются только GGUF-файлы по закреплённым Hugging Face commit URL.
+В релизе `0.3.0` совместимый arm64 runtime `prism-b10709-9a9394a` включён как ресурс приложения. Все Mach-O и dylib повторно подписаны Developer ID проекта до подписи app bundle. Это исключает запуск неподписанного скачанного executable. Модели и vision projectors загружаются только по закреплённым Hugging Face commit URL.
+
+Inference выполняет PrismML llama.cpp с Metal offload (`-ngl 99`). Это оптимизированный Apple Silicon runtime, но не MLX. Переход на MLX потребует отдельного нативного inference host и не маскируется маркетинговой подписью.
 
 ## Проверенные свойства
 
@@ -36,19 +42,23 @@ Rust запускает выбранный executable с `--host 127.0.0.1`, п�
 - после `fsync` и SHA-256 файл атомарно переименовывается в готовый GGUF;
 - пауза сохраняет `.part`, отмена удаляет его, повторная установка продолжает загрузку;
 - UI не передаёт произвольный путь в команду рекурсивного удаления — Rust принимает только известный model id.
+- текстовые вложения ограничены 2 МБ, изображения — 12 МБ; допустимые форматы заданы allowlist;
+- веб-поиск вызывается только после явного включения в UI, имеет fixed HTTPS endpoint, timeout, лимит ответа и помечает результаты как недоверенные данные;
+- история чатов остаётся в локальном WebView IndexedDB и не входит в диагностический отчёт;
+- OpenAI endpoint всегда показывается как loopback URL и не открывается во внешнюю сеть.
 
 ## Следующий конкретный этап
 
 1. Измерить пиковую unified memory и скорость 1.7B/4B/8B/27B на нескольких M-series.
 2. На основании измерений откалибровать рекомендации и контекст.
-3. Добавить vision projector как управляемый дополнительный пакет.
-4. Добавить локальную историю чатов и tool/MCP слой.
+3. Проверить vision и изображения на всех трёх 27B-вариантах с реальными файлами projector.
+4. Добавить переименование/удаление чатов и расширяемый MCP слой.
 
 ## Открытые вопросы
 
 - реальные пики памяти и скорость на доступных Mac;
 - App Sandbox, если он будет включён в будущем;
-- vision и tool calling в закреплённом runtime;
+- tool calling и будущий MCP слой в закреплённом runtime;
 - восстановление активной карточки загрузки после аварийного завершения UI — `.part` уже сохраняется, но состояние скорости не персистится.
 
 Актуальные внешние версии и контрольные суммы находятся в `docs/verified-artifacts.md`.

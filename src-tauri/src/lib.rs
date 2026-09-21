@@ -1,5 +1,6 @@
 use futures_util::StreamExt;
 mod installer;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -35,6 +36,10 @@ struct ServerStatus {
     phase: ServerPhase,
     port: u16,
     detail: Option<String>,
+    model_name: Option<String>,
+    context_size: Option<u32>,
+    memory_bytes: Option<u64>,
+    backend: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -62,7 +67,7 @@ struct StartConfig {
 #[serde(rename_all = "camelCase")]
 struct ChatMessage {
     role: String,
-    content: String,
+    content: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -91,12 +96,91 @@ struct SystemInfo {
     free_disk_bytes: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentRequest {
+    path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentPayload {
+    name: String,
+    mime: String,
+    size: u64,
+    kind: String,
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WebSearchRequest {
+    query: String,
+    limit: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SearchRss {
+    channel: SearchChannel,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SearchChannel {
+    #[serde(default)]
+    item: Vec<SearchItem>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SearchItem {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    link: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebSearchResult {
+    title: String,
+    url: String,
+    snippet: String,
+}
+
 fn command_text(program: &str, args: &[&str]) -> Option<String> {
     let output = StdCommand::new(program).args(args).output().ok()?;
     output
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn process_memory_bytes(pid: u32) -> Option<u64> {
+    let pid = pid.to_string();
+    command_text("/bin/ps", &["-o", "rss=", "-p", &pid])
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|kilobytes| kilobytes.saturating_mul(1024))
+}
+
+fn clean_search_snippet(value: &str) -> String {
+    let mut result = String::with_capacity(value.len());
+    let mut inside_tag = false;
+    for character in value.chars() {
+        match character {
+            '<' => inside_tag = true,
+            '>' => inside_tag = false,
+            _ if !inside_tag => result.push(character),
+            _ => {}
+        }
+    }
+    result
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[tauri::command]
@@ -119,6 +203,116 @@ fn system_info() -> SystemInfo {
         memory_bytes,
         free_disk_bytes,
     }
+}
+
+#[tauri::command]
+async fn read_attachment(request: AttachmentRequest) -> Result<AttachmentPayload, String> {
+    let path = validate_file(&request.path, "attachment")?;
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|error| format!("Could not inspect attachment: {error}"))?;
+    let size = metadata.len();
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("attachment")
+        .to_owned();
+    let image_mime = match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    };
+    if let Some(mime) = image_mime {
+        if size > 12 * 1024 * 1024 {
+            return Err("Images are limited to 12 MB".into());
+        }
+        let bytes = tokio::fs::read(&path)
+            .await
+            .map_err(|error| format!("Could not read image: {error}"))?;
+        return Ok(AttachmentPayload {
+            name,
+            mime: mime.into(),
+            size,
+            kind: "image".into(),
+            content: format!("data:{mime};base64,{}", BASE64.encode(bytes)),
+        });
+    }
+    let mime =
+        match extension.as_str() {
+            "txt" => "text/plain",
+            "md" | "markdown" => "text/markdown",
+            "csv" => "text/csv",
+            "json" => "application/json",
+            "rs" | "swift" | "js" | "jsx" | "ts" | "tsx" | "py" | "sh" | "toml" | "yaml"
+            | "yml" | "xml" | "html" | "css" => "text/plain",
+            _ => return Err(
+                "Supported attachments: PNG, JPEG, WebP, TXT, Markdown, CSV, JSON and source code"
+                    .into(),
+            ),
+        };
+    if size > 2 * 1024 * 1024 {
+        return Err("Text attachments are limited to 2 MB".into());
+    }
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|error| format!("Attachment must contain valid UTF-8 text: {error}"))?;
+    Ok(AttachmentPayload {
+        name,
+        mime: mime.into(),
+        size,
+        kind: "text".into(),
+        content,
+    })
+}
+
+#[tauri::command]
+async fn web_search(
+    state: State<'_, AppState>,
+    request: WebSearchRequest,
+) -> Result<Vec<WebSearchResult>, String> {
+    let query = request.query.trim();
+    if query.is_empty() || query.chars().count() > 500 {
+        return Err("Search query must contain between 1 and 500 characters".into());
+    }
+    let response = state
+        .client
+        .get("https://www.bing.com/search")
+        .query(&[("q", query), ("format", "rss")])
+        .timeout(Duration::from_secs(12))
+        .send()
+        .await
+        .map_err(|error| format!("Web search failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Web search returned {}", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("Could not read search response: {error}"))?;
+    if bytes.len() > 1024 * 1024 {
+        return Err("Search response exceeded 1 MB".into());
+    }
+    let feed: SearchRss = quick_xml::de::from_reader(bytes.as_ref())
+        .map_err(|error| format!("Could not parse search response: {error}"))?;
+    let limit = request.limit.unwrap_or(5).clamp(1, 5);
+    Ok(feed
+        .channel
+        .item
+        .into_iter()
+        .filter(|item| item.link.starts_with("https://") || item.link.starts_with("http://"))
+        .take(limit)
+        .map(|item| WebSearchResult {
+            title: item.title,
+            url: item.link,
+            snippet: clean_search_snippet(&item.description),
+        })
+        .collect())
 }
 
 fn validate_file(path: &str, label: &str) -> Result<PathBuf, String> {
@@ -217,6 +411,13 @@ async fn start_server(
         phase: ServerPhase::Starting,
         port: config.port,
         detail: Some("Loading model and waiting for health check".into()),
+        model_name: model
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(ToOwned::to_owned),
+        context_size: Some(config.context_size),
+        memory_bytes: None,
+        backend: Some("llama.cpp · Metal · optimized for Apple Silicon".into()),
     };
     emit_status(&app, &managed.status);
 
@@ -257,6 +458,13 @@ async fn start_server(
                         phase: ServerPhase::Error,
                         port: config.port,
                         detail: Some(format!("llama-server exited before becoming ready: {exit}")),
+                        model_name: model
+                            .file_name()
+                            .and_then(|value| value.to_str())
+                            .map(ToOwned::to_owned),
+                        context_size: Some(config.context_size),
+                        memory_bytes: None,
+                        backend: Some("llama.cpp · Metal · optimized for Apple Silicon".into()),
                     };
                     emit_status(&app, &managed.status);
                     return Err(managed.status.detail.clone().unwrap_or_default());
@@ -272,10 +480,22 @@ async fn start_server(
             .is_ok_and(|response| response.status().is_success())
         {
             let mut managed = state.server.lock().await;
+            let memory_bytes = managed
+                .child
+                .as_ref()
+                .and_then(|child| child.id())
+                .and_then(process_memory_bytes);
             managed.status = ServerStatus {
                 phase: ServerPhase::Ready,
                 port: config.port,
                 detail: Some(format!("OpenAI endpoint: http://{HOST}:{}/v1", config.port)),
+                model_name: model
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .map(ToOwned::to_owned),
+                context_size: Some(config.context_size),
+                memory_bytes,
+                backend: Some("llama.cpp · Metal · optimized for Apple Silicon".into()),
             };
             emit_status(&app, &managed.status);
             return Ok(managed.status.clone());
@@ -291,6 +511,13 @@ async fn start_server(
         phase: ServerPhase::Error,
         port: config.port,
         detail: Some("Health check timed out after 180 seconds".into()),
+        model_name: model
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(ToOwned::to_owned),
+        context_size: Some(config.context_size),
+        memory_bytes: None,
+        backend: Some("llama.cpp · Metal · optimized for Apple Silicon".into()),
     };
     emit_status(&app, &managed.status);
     Err(managed.status.detail.clone().unwrap_or_default())
@@ -312,6 +539,10 @@ async fn stop_server(app: AppHandle, state: State<'_, AppState>) -> Result<Serve
         phase: ServerPhase::Stopped,
         port: managed.status.port,
         detail: None,
+        model_name: None,
+        context_size: None,
+        memory_bytes: None,
+        backend: None,
     };
     emit_status(&app, &managed.status);
     Ok(managed.status.clone())
@@ -325,6 +556,9 @@ async fn server_status(state: State<'_, AppState>) -> Result<ServerStatus, Strin
             managed.child = None;
             managed.status.phase = ServerPhase::Error;
             managed.status.detail = Some(format!("llama-server exited: {exit}"));
+            managed.status.memory_bytes = None;
+        } else if let Some(pid) = child.id() {
+            managed.status.memory_bytes = process_memory_bytes(pid);
         }
     }
     Ok(managed.status.clone())
@@ -426,6 +660,7 @@ pub fn run() {
         .expect("could not create HTTP client");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             server: Mutex::new(ManagedServer::default()),
             client: http_client.clone(),
@@ -437,9 +672,12 @@ pub fn run() {
             stop_server,
             server_status,
             stream_chat,
+            read_attachment,
+            web_search,
             installer::managed_catalog,
             installer::install_runtime,
             installer::install_model,
+            installer::install_projector,
             installer::pause_install,
             installer::cancel_install,
             installer::remove_model

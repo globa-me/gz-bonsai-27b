@@ -7,6 +7,7 @@ import { type Locale, translate } from "./i18n";
 import appIcon from "./assets/app-icon.png";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { createChat, loadChats, saveChats, type Attachment, type ChatMessage, type ChatSession, type SearchSource } from "./chatStore";
+import { resolveRuntimePath } from "./runtimeSelection";
 
 type ServerPhase = "stopped" | "starting" | "ready" | "stopping" | "error";
 type View = "chat" | "models" | "diagnostics" | "about";
@@ -145,7 +146,14 @@ export default function App() {
   async function refreshCatalog() {
     const next = await invoke<ManagedCatalog>("managed_catalog");
     setCatalog(next);
-    if (next.runtimePath) setRuntimePath((current: string) => current || next.runtimePath || "");
+    if (next.runtimePath) {
+      setRuntimePath((current: string) => resolveRuntimePath(
+        current,
+        modelPath,
+        next.runtimePath,
+        next.models.map((model) => model.installedPath),
+      ));
+    }
     return next;
   }
 
@@ -496,7 +504,7 @@ export default function App() {
       </aside>
       <section className="main-pane">
         {view === "chat" && <>
-          <header className="pane-bar"><button className="model-picker" onClick={() => setView("models")}><Logo small /><span><small>{t("localModel")}</small>{status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))}</span><ChevronIcon /></button><details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend ?? t("metalBackend")} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer}>{t("stopModel")}</button>}</div></details></header>
+          <header className="pane-bar"><button className="model-picker" onClick={() => setView("models")}><Logo small /><span><small>{t("localModel")}</small>{status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))}</span><ChevronIcon /></button><details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer}>{t("stopModel")}</button>}</div></details></header>
           <div className={`conversation ${messages.length === 0 ? "is-empty" : ""}`}>
             {messages.length === 0 ? <div className="welcome"><Logo /><h1>{status.phase === "ready" ? t("chatWelcome") : t("chooseModelFirst")}</h1>{status.phase !== "ready" && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? <MarkdownMessage>{message.content || (activeRequest === message.id ? t("generating") : "")}</MarkdownMessage> : <div className="plain-message">{message.content}</div>}{message.sources?.length ? <div className="sources"><small>{t("sources")}</small>{message.sources.map((source, index) => <ExternalLink href={source.url} key={source.url}>{index + 1}. {source.title}</ExternalLink>)}</div> : null}</div></article>)}
           </div>

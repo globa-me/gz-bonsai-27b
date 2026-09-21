@@ -2,7 +2,8 @@
 <h1 align="center">GZ Bonsai 27B</h1>
 <p align="center">Простое открытое macOS-приложение для приватного запуска моделей Bonsai на своём Mac.</p>
 <p align="center">
-  <a href="https://github.com/globa-me/gz-bonsai-27b/releases/tag/v0.3.0"><img alt="Release 0.3.0" src="https://img.shields.io/badge/release-0.3.0-2f6949" /></a>
+  <a href="https://github.com/globa-me/gz-bonsai-27b/releases/tag/v0.2.0"><img alt="Release 0.2.0" src="https://img.shields.io/badge/stable-0.2.0-2f6949" /></a>
+  <img alt="Next 0.3.0" src="https://img.shields.io/badge/next-0.3.0-dceee2" />
   <img alt="macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-2f6949" />
   <img alt="License MIT" src="https://img.shields.io/badge/code-MIT-dceee2" />
 </p>
@@ -11,7 +12,9 @@
 
 ## Скачать
 
-[Скачать GZ Bonsai 27B 0.3.0 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.3.0/GZ-Bonsai-27B-0.3.0-arm64.dmg) — подписанный и нотариально заверенный Apple DMG. Перетащите приложение в папку Applications.
+[Скачать стабильную GZ Bonsai 27B 0.2.0 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.2.0/GZ-Bonsai-27B-0.2.0-arm64.dmg) — подписанный и нотариально заверенный Apple DMG. Перетащите приложение в папку Applications.
+
+Версия `0.3.0` с новым чатом, вложениями, веб-поиском, endpoint и новой иконкой находится в `main`; публичный DMG появится после завершения Apple notarization.
 
 Совместимый runtime уже находится внутри приложения. Откройте «Модели», скачайте выбранный вариант и запустите локальный чат — Terminal не нужен.
 

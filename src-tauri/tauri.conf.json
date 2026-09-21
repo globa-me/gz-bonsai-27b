@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GZ Bonsai 27B",
+  "version": "0.1.0",
+  "identifier": "com.bonsai.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "GZ Bonsai 27B",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 820,
+        "minHeight": 680,
+        "center": true,
+        "backgroundColor": "#f4f2eb"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "dmg",
+    "copyright": "© 2026 Gennadiy Zakharov",
+    "shortDescription": "Простой локальный запуск моделей Bonsai",
+    "longDescription": "GZ Bonsai 27B помогает выбрать, запустить и использовать модели PrismML локально на Mac.",
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "Developer ID Application: Gennadiy Zakharov (BN3D9H4C7J)",
+      "hardenedRuntime": true
+    }
+  }
+}

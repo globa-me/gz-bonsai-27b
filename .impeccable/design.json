@@ -1,0 +1,239 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-21T10:52:42Z",
+  "title": "Design System: GZ Bonsai 27B",
+  "extensions": {
+    "colorMeta": {
+      "forest-primary": {
+        "role": "primary",
+        "displayName": "Bonsai Forest",
+        "canonical": "#2f6949",
+        "tonalRamp": ["oklch(15% 0.081 157.1)", "oklch(25% 0.081 157.1)", "oklch(35% 0.081 157.1)", "oklch(45% 0.081 157.1)", "oklch(55% 0.081 157.1)", "oklch(65% 0.081 157.1)", "oklch(80% 0.081 157.1)", "oklch(95% 0.081 157.1)"]
+      },
+      "forest-action": {
+        "role": "primary",
+        "displayName": "Action Leaf",
+        "canonical": "#377452",
+        "tonalRamp": ["oklch(15% 0.084 157.1)", "oklch(25% 0.084 157.1)", "oklch(35% 0.084 157.1)", "oklch(45% 0.084 157.1)", "oklch(55% 0.084 157.1)", "oklch(65% 0.084 157.1)", "oklch(80% 0.084 157.1)", "oklch(95% 0.084 157.1)"]
+      },
+      "leaf-cream": {
+        "role": "primary",
+        "displayName": "Leaf Cream",
+        "canonical": "#f4f6ef",
+        "tonalRamp": ["oklch(15% 0.009 119.6)", "oklch(25% 0.009 119.6)", "oklch(35% 0.009 119.6)", "oklch(45% 0.009 119.6)", "oklch(55% 0.009 119.6)", "oklch(65% 0.009 119.6)", "oklch(80% 0.009 119.6)", "oklch(95% 0.009 119.6)"]
+      },
+      "pine-ink": {
+        "role": "neutral",
+        "displayName": "Pine Ink",
+        "canonical": "#233129",
+        "tonalRamp": ["oklch(15% 0.024 159.5)", "oklch(25% 0.024 159.5)", "oklch(35% 0.024 159.5)", "oklch(45% 0.024 159.5)", "oklch(55% 0.024 159.5)", "oklch(65% 0.024 159.5)", "oklch(80% 0.024 159.5)", "oklch(95% 0.024 159.5)"]
+      },
+      "body-ink": {
+        "role": "neutral",
+        "displayName": "Body Ink",
+        "canonical": "#334038",
+        "tonalRamp": ["oklch(15% 0.022 158.1)", "oklch(25% 0.022 158.1)", "oklch(35% 0.022 158.1)", "oklch(45% 0.022 158.1)", "oklch(55% 0.022 158.1)", "oklch(65% 0.022 158.1)", "oklch(80% 0.022 158.1)", "oklch(95% 0.022 158.1)"]
+      },
+      "muted-ink": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "canonical": "#59685f",
+        "tonalRamp": ["oklch(15% 0.023 159.1)", "oklch(25% 0.023 159.1)", "oklch(35% 0.023 159.1)", "oklch(45% 0.023 159.1)", "oklch(55% 0.023 159.1)", "oklch(65% 0.023 159.1)", "oklch(80% 0.023 159.1)", "oklch(95% 0.023 159.1)"]
+      },
+      "quiet-ink": {
+        "role": "neutral",
+        "displayName": "Quiet Ink",
+        "canonical": "#778079",
+        "tonalRamp": ["oklch(15% 0.015 152.4)", "oklch(25% 0.015 152.4)", "oklch(35% 0.015 152.4)", "oklch(45% 0.015 152.4)", "oklch(55% 0.015 152.4)", "oklch(65% 0.015 152.4)", "oklch(80% 0.015 152.4)", "oklch(95% 0.015 152.4)"]
+      },
+      "workspace-mist": {
+        "role": "neutral",
+        "displayName": "Workspace Mist",
+        "canonical": "#eef0eb",
+        "tonalRamp": ["oklch(15% 0.007 124.4)", "oklch(25% 0.007 124.4)", "oklch(35% 0.007 124.4)", "oklch(45% 0.007 124.4)", "oklch(55% 0.007 124.4)", "oklch(65% 0.007 124.4)", "oklch(80% 0.007 124.4)", "oklch(95% 0.007 124.4)"]
+      },
+      "sidebar-mint": {
+        "role": "secondary",
+        "displayName": "Sidebar Mint",
+        "canonical": "#dceee2",
+        "tonalRamp": ["oklch(15% 0.025 156.7)", "oklch(25% 0.025 156.7)", "oklch(35% 0.025 156.7)", "oklch(45% 0.025 156.7)", "oklch(55% 0.025 156.7)", "oklch(65% 0.025 156.7)", "oklch(80% 0.025 156.7)", "oklch(95% 0.025 156.7)"]
+      },
+      "main-paper": {
+        "role": "neutral",
+        "displayName": "Main Paper",
+        "canonical": "#fbfbfa",
+        "tonalRamp": ["oklch(15% 0.001 106.4)", "oklch(25% 0.001 106.4)", "oklch(35% 0.001 106.4)", "oklch(45% 0.001 106.4)", "oklch(55% 0.001 106.4)", "oklch(65% 0.001 106.4)", "oklch(80% 0.001 106.4)", "oklch(95% 0.001 106.4)"]
+      },
+      "raised-white": {
+        "role": "neutral",
+        "displayName": "Raised White",
+        "canonical": "#ffffff",
+        "tonalRamp": ["oklch(15% 0 0)", "oklch(25% 0 0)", "oklch(35% 0 0)", "oklch(45% 0 0)", "oklch(55% 0 0)", "oklch(65% 0 0)", "oklch(80% 0 0)", "oklch(95% 0 0)"]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#dce0dc",
+        "tonalRamp": ["oklch(15% 0.007 145.5)", "oklch(25% 0.007 145.5)", "oklch(35% 0.007 145.5)", "oklch(45% 0.007 145.5)", "oklch(55% 0.007 145.5)", "oklch(65% 0.007 145.5)", "oklch(80% 0.007 145.5)", "oklch(95% 0.007 145.5)"]
+      },
+      "divider": {
+        "role": "neutral",
+        "displayName": "Divider",
+        "canonical": "#eceeeb",
+        "tonalRamp": ["oklch(15% 0.005 134.9)", "oklch(25% 0.005 134.9)", "oklch(35% 0.005 134.9)", "oklch(45% 0.005 134.9)", "oklch(55% 0.005 134.9)", "oklch(65% 0.005 134.9)", "oklch(80% 0.005 134.9)", "oklch(95% 0.005 134.9)"]
+      },
+      "leaf-success": {
+        "role": "tertiary",
+        "displayName": "Leaf Success",
+        "canonical": "#54a16b",
+        "tonalRamp": ["oklch(15% 0.112 151.8)", "oklch(25% 0.112 151.8)", "oklch(35% 0.112 151.8)", "oklch(45% 0.112 151.8)", "oklch(55% 0.112 151.8)", "oklch(65% 0.112 151.8)", "oklch(80% 0.112 151.8)", "oklch(95% 0.112 151.8)"]
+      },
+      "amber-progress": {
+        "role": "tertiary",
+        "displayName": "Amber Progress",
+        "canonical": "#d29c4e",
+        "tonalRamp": ["oklch(15% 0.115 74.3)", "oklch(25% 0.115 74.3)", "oklch(35% 0.115 74.3)", "oklch(45% 0.115 74.3)", "oklch(55% 0.115 74.3)", "oklch(65% 0.115 74.3)", "oklch(80% 0.115 74.3)", "oklch(95% 0.115 74.3)"]
+      },
+      "clay-danger": {
+        "role": "tertiary",
+        "displayName": "Clay Danger",
+        "canonical": "#bc6657",
+        "tonalRamp": ["oklch(15% 0.113 31)", "oklch(25% 0.113 31)", "oklch(35% 0.113 31)", "oklch(45% 0.113 31)", "oklch(55% 0.113 31)", "oklch(65% 0.113 31)", "oklch(80% 0.113 31)", "oklch(95% 0.113 31)"]
+      },
+      "clay-stop": {
+        "role": "tertiary",
+        "displayName": "Clay Stop",
+        "canonical": "#795048",
+        "tonalRamp": ["oklch(15% 0.057 31.5)", "oklch(25% 0.057 31.5)", "oklch(35% 0.057 31.5)", "oklch(45% 0.057 31.5)", "oklch(55% 0.057 31.5)", "oklch(65% 0.057 31.5)", "oklch(80% 0.057 31.5)", "oklch(95% 0.057 31.5)"]
+      }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Functional Headline", "purpose": "Page, welcome, and about headings; never larger than 21px." },
+      "title": { "displayName": "Compact Title", "purpose": "Product identity and strongest small title." },
+      "body": { "displayName": "Readable Body", "purpose": "Chat messages and explanatory copy." },
+      "label": { "displayName": "Operational Label", "purpose": "Controls, metadata, and status text." }
+    },
+    "shadows": [
+      { "name": "shell-ambient", "value": "0 12px 35px rgba(37,52,42,.07)", "purpose": "Broad, quiet separation beneath the main pane." },
+      { "name": "composer-ambient", "value": "0 5px 18px rgba(36,54,42,.07)", "purpose": "Separates the anchored composer from scrolling chat." },
+      { "name": "control-hairline", "value": "0 1px 2px rgba(35,54,42,.04)", "purpose": "Minimal lift for the compact model picker." },
+      { "name": "selected-lift", "value": "0 1px 2px rgba(30,65,44,.05)", "purpose": "Marks active sidebar navigation." },
+      { "name": "segment-lift", "value": "0 1px 3px rgba(33,67,45,.1)", "purpose": "Marks the active locale segment." }
+    ],
+    "motion": [
+      { "name": "status-pulse", "value": "pulse 1s infinite alternate", "purpose": "Communicates runtime starting and stopping through opacity." },
+      { "name": "reduced-motion", "value": "0.01ms duration; 1 iteration", "purpose": "Suppresses animation and transitions when reduced motion is requested." }
+    ],
+    "breakpoints": [
+      { "name": "compact-desktop", "value": "900px" }
+    ],
+    "components": [
+      {
+        "name": "Leaf Mark",
+        "kind": "custom",
+        "refersTo": "leaf-mark",
+        "description": "The authored GZ Bonsai identity mark used in the brand, selectors, and empty state.",
+        "html": "<svg class=\"ds-leaf-mark\" viewBox=\"0 0 32 32\" aria-hidden=\"true\"><path d=\"M16 25V12M16 16c-4.5-5.2-9-4.5-11-3.4.8 6 5.3 8.4 10 7.2M16 12c3.5-6.3 8.5-7.2 11-6.1-.1 6.5-4.3 9.6-10.4 9.2M10 25h12\"/></svg>",
+        "css": ".ds-leaf-mark { width: 30px; height: 30px; padding: 5px; border-radius: 9px; background: #2f6949; fill: none; stroke: #f4f6ef; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }"
+      },
+      {
+        "name": "Primary Button",
+        "kind": "button",
+        "refersTo": "button-primary",
+        "description": "Compact forest action for start, copy, and clear commitments.",
+        "html": "<button class=\"ds-button-primary\">Start model</button>",
+        "css": ".ds-button-primary { border: 0; border-radius: 9px; padding: 10px 14px; background: #2f6949; color: #fff; font: 750 11px -apple-system, BlinkMacSystemFont, 'SF Pro Text', ui-sans-serif, sans-serif; cursor: pointer; } .ds-button-primary:hover { background: #2f6949; } .ds-button-primary:active { background: #2f6949; } .ds-button-primary:focus-visible { outline: 3px solid rgba(55,111,80,.25); outline-offset: 2px; } .ds-button-primary:disabled { opacity: .42; cursor: default; }"
+      },
+      {
+        "name": "Secondary Button",
+        "kind": "button",
+        "refersTo": "button-secondary",
+        "description": "Quiet pale-green action for moving into model setup.",
+        "html": "<button class=\"ds-button-secondary\">Open models</button>",
+        "css": ".ds-button-secondary { border: 1px solid #d5ded7; border-radius: 9px; padding: 8px 12px; background: #edf5ef; color: #2f6849; font: 700 11px -apple-system, BlinkMacSystemFont, 'SF Pro Text', ui-sans-serif, sans-serif; cursor: pointer; } .ds-button-secondary:hover { background: #edf5ef; } .ds-button-secondary:active { background: #edf5ef; } .ds-button-secondary:focus-visible { outline: 3px solid rgba(55,111,80,.25); outline-offset: 2px; }"
+      },
+      {
+        "name": "Active Navigation Item",
+        "kind": "nav",
+        "refersTo": "nav-active",
+        "description": "Full-width sidebar row with an authored outline icon and quiet selected lift.",
+        "html": "<button class=\"ds-nav-active\"><svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><path d=\"M4 4.5h12v8H9l-4 3v-3H4z\"/></svg><span>New chat</span></button>",
+        "css": ".ds-nav-active { display: flex; align-items: center; gap: 11px; width: 100%; border: 0; border-radius: 9px; padding: 9px 10px; background: rgba(255,255,255,.76); color: #1e3d2b; box-shadow: 0 1px 2px rgba(30,65,44,.05); font: 400 13px -apple-system, BlinkMacSystemFont, 'SF Pro Text', ui-sans-serif, sans-serif; text-align: left; cursor: pointer; } .ds-nav-active svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.45; stroke-linecap: round; stroke-linejoin: round; } .ds-nav-active:hover { background: rgba(255,255,255,.76); } .ds-nav-active:focus-visible { outline: 3px solid rgba(55,111,80,.25); outline-offset: 2px; }"
+      },
+      {
+        "name": "Model Picker",
+        "kind": "button",
+        "refersTo": "model-picker",
+        "description": "Compact top-bar selector showing local model context and the selected filename.",
+        "html": "<button class=\"ds-model-picker\"><svg class=\"ds-model-logo\" viewBox=\"0 0 32 32\" aria-hidden=\"true\"><path d=\"M16 25V12M16 16c-4.5-5.2-9-4.5-11-3.4.8 6 5.3 8.4 10 7.2M16 12c3.5-6.3 8.5-7.2 11-6.1-.1 6.5-4.3 9.6-10.4 9.2M10 25h12\"/></svg><span><small>Local model</small><b>Not selected</b></span><svg class=\"ds-chevron\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"m5 6.5 3 3 3-3\"/></svg></button>",
+        "css": ".ds-model-picker { display: flex; align-items: center; gap: 9px; max-width: 420px; border: 1px solid #e0e3df; border-radius: 10px; padding: 6px 9px; background: #fff; color: #334139; box-shadow: 0 1px 2px rgba(35,54,42,.04); text-align: left; cursor: pointer; } .ds-model-picker > span { display: flex; min-width: 0; flex-direction: column; font: 400 11px -apple-system, BlinkMacSystemFont, 'SF Pro Text', ui-sans-serif, sans-serif; white-space: nowrap; } .ds-model-picker small { color: #5d6d63; font-size: 10px; } .ds-model-picker b { overflow: hidden; text-overflow: ellipsis; font-weight: 400; } .ds-model-logo { width: 25px; height: 25px; padding: 4px; border-radius: 7px; background: #2f6949; fill: none; stroke: #f4f6ef; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; } .ds-chevron { width: 16px; height: 16px; margin-left: 5px; fill: none; stroke: #627168; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; } .ds-model-picker:hover { background: #fff; } .ds-model-picker:focus-visible { outline: 3px solid rgba(55,111,80,.25); outline-offset: 2px; }"
+      },
+      {
+        "name": "File Field",
+        "kind": "input",
+        "refersTo": "field",
+        "description": "Full-width file selector that keeps a technical path readable and the action stable.",
+        "html": "<div class=\"ds-file-field\"><label>Model</label><button><span>Not selected</span><strong>Choose</strong></button></div>",
+        "css": ".ds-file-field { width: 360px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', ui-sans-serif, sans-serif; } .ds-file-field label { display: block; margin: 0 0 7px; color: #5c6c62; font-size: 11px; font-weight: 650; } .ds-file-field button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; border: 1px solid #dce0dc; border-radius: 9px; padding: 11px 12px; background: #fafbfa; color: #324239; text-align: left; cursor: pointer; } .ds-file-field span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #69766e; font-size: 11px; } .ds-file-field strong { flex: none; color: #377452; font-size: 10px; } .ds-file-field button:hover { background: #fafbfa; } .ds-file-field button:focus-visible { outline: 3px solid rgba(55,111,80,.25); outline-offset: 2px; }"
+      },
+      {
+        "name": "Chat Composer",
+        "kind": "input",
+        "refersTo": "composer",
+        "description": "Bottom-anchored writing surface with the distinctive square send control.",
+        "html": "<div class=\"ds-composer\"><textarea rows=\"2\" placeholder=\"Write a message…\"></textarea><button aria-label=\"Send\"><svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><path d=\"M10 15V5m0 0L6 9m4-4 4 4\"/></svg></button></div>",
+        "css": ".ds-composer { display: flex; align-items: flex-end; gap: 10px; width: 520px; min-height: 68px; padding: 10px 11px 10px 15px; border: 1px solid #dcdeda; border-radius: 15px; background: #fff; box-shadow: 0 5px 18px rgba(36,54,42,.07); } .ds-composer textarea { flex: 1; resize: none; border: 0; outline: 0; padding: 7px 0; background: transparent; color: #2c3931; font: 400 13px/1.45 -apple-system, BlinkMacSystemFont, 'SF Pro Text', ui-sans-serif, sans-serif; } .ds-composer textarea::placeholder { color: #68756d; } .ds-composer button { display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 10px; background: #2f6949; color: #fff; cursor: pointer; } .ds-composer button svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; } .ds-composer button:hover { background: #2f6949; } .ds-composer button:focus-visible, .ds-composer textarea:focus-visible { outline: 3px solid rgba(55,111,80,.25); outline-offset: 2px; } .ds-composer button:disabled { background: #bdcbc1; cursor: default; }"
+      },
+      {
+        "name": "Ready Status",
+        "kind": "custom",
+        "description": "Compact semantic runtime signal used in the pane bar and settings view.",
+        "html": "<div class=\"ds-status-ready\"><i></i><span>Server ready</span></div>",
+        "css": ".ds-status-ready { display: flex; align-items: center; gap: 8px; color: #58675e; font: 400 10px -apple-system, BlinkMacSystemFont, 'SF Pro Text', ui-sans-serif, sans-serif; text-transform: uppercase; letter-spacing: .07em; } .ds-status-ready i { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #54a16b; box-shadow: 0 0 0 3px rgba(74,151,97,.1); }"
+      },
+      {
+        "name": "Settings Card",
+        "kind": "card",
+        "refersTo": "settings-card",
+        "description": "A bordered editing surface that groups model configuration without visual heaviness.",
+        "html": "<section class=\"ds-settings-card\"><h3>Runtime</h3><p>Select the compatible local runtime and model files.</p></section>",
+        "css": ".ds-settings-card { width: 420px; padding: 22px; border: 1px solid #e1e4e0; border-radius: 14px; background: #fff; color: #334038; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', ui-sans-serif, sans-serif; } .ds-settings-card h3 { margin: 0; color: #2b3830; font-size: 14px; font-weight: 650; letter-spacing: -.01em; } .ds-settings-card p { margin: 7px 0 0; color: #778079; font-size: 12px; line-height: 1.55; } .ds-settings-card:hover { background: #fff; } .ds-settings-card:focus-within { outline: 3px solid rgba(55,111,80,.25); outline-offset: 2px; }"
+      }
+    ],
+    "narrative": {
+      "northStar": "The Quiet Local Grove",
+      "overview": "GZ Bonsai 27B feels like a calm, well-made macOS utility: persistent navigation sits on a pale green plane while the main work happens on a spacious, warm paper canvas. The interface is restrained and information-led, with the product identity carried by the authored bonsai leaf, the green-and-cream palette, and careful native-feeling proportions rather than decoration.\n\nThe visual system is deliberately compact around controls and generous around the conversation. Fine borders, low ambient shadows, and small semantic status signals make technical state legible without turning the app into a dashboard. It may borrow the clarity of familiar local-model tools, but it must remain recognizably GZ Bonsai rather than imitating ChatGPT or Jan.",
+      "keyCharacteristics": [
+        "Persistent pale-green sidebar beside a warm, quiet working canvas.",
+        "Original bonsai leaf mark and consistently authored outline icons.",
+        "Compact 10–13px operational text with functional headings capped at 21px.",
+        "Softly rounded controls, fine neutral-green borders, and restrained ambient depth.",
+        "Generous conversation measure with the composer anchored to the bottom edge."
+      ],
+      "rules": [
+        { "name": "The Living Green Rule", "body": "Green carries identity, readiness, and safe forward action; never flood the main canvas with it.", "section": "colors" },
+        { "name": "The Semantic Restraint Rule", "body": "Amber and clay belong to runtime state and destructive action only, never to decoration.", "section": "colors" },
+        { "name": "The 21-Pixel Ceiling Rule", "body": "Functional screens never use a heading larger than the established 21px headline.", "section": "typography" },
+        { "name": "The Native Voice Rule", "body": "Use the Apple system stack throughout the product; monospace appears only where raw runtime output requires it.", "section": "typography" },
+        { "name": "The Persistent Navigation Rule", "body": "The pale-green sidebar remains a stable spatial anchor; views replace only the main pane.", "section": "layout" },
+        { "name": "The Conversation Measure Rule", "body": "Messages and the composer share the same centered 780px maximum width.", "section": "layout" },
+        { "name": "The Tonal-First Rule", "body": "Establish hierarchy with surface color and a one-pixel border before adding a shadow.", "section": "elevation" },
+        { "name": "The One Stroke Rule", "body": "New icons must match the existing authored outline family: rounded caps and joins, restrained 1.4–1.8 strokes, and simple geometry.", "section": "shapes" }
+      ],
+      "dos": [
+        "Do keep the sidebar pale green, persistent, and visually quieter than the work in the main pane.",
+        "Do cap functional headings at 21px and rely on spacing and weight for hierarchy.",
+        "Do use readable green-biased muted text, retaining the implemented contrast rather than fading metadata into pale gray.",
+        "Do keep icons in the same authored rounded-stroke SVG language and reuse the original bonsai leaf identity.",
+        "Do make focus, runtime state, disabled state, and reduced motion visible without depending on color alone."
+      ],
+      "donts": [
+        "Don't copy ChatGPT or Jan literally, introduce their logos, or replace the GZ Bonsai leaf with a generic AI symbol.",
+        "Don't turn the spacious conversation canvas into a grid of floating cards or decorative dashboards.",
+        "Don't introduce oversized display typography, gradients as decoration, glassmorphism, or saturated accent colors.",
+        "Don't use emoji, filled icon packs, mixed stroke styles, or arbitrary corner radii.",
+        "Don't use warning, error, or stop colors outside their semantic runtime and destructive-action roles."
+      ]
+    }
+  }
+}

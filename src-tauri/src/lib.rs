@@ -1,4 +1,5 @@
 use futures_util::StreamExt;
+mod installer;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -419,18 +420,29 @@ async fn stream_chat(
 }
 
 pub fn run() {
+    let http_client = reqwest::Client::builder()
+        .user_agent(format!("GZ-Bonsai-27B/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .expect("could not create HTTP client");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             server: Mutex::new(ManagedServer::default()),
-            client: reqwest::Client::new(),
+            client: http_client.clone(),
         })
+        .manage(installer::InstallerState::new(http_client))
         .invoke_handler(tauri::generate_handler![
             system_info,
             start_server,
             stop_server,
             server_status,
-            stream_chat
+            stream_chat,
+            installer::managed_catalog,
+            installer::install_runtime,
+            installer::install_model,
+            installer::pause_install,
+            installer::cancel_install,
+            installer::remove_model
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {

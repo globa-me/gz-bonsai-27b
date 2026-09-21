@@ -35,7 +35,8 @@ This is a focused, transparent home for the Bonsai model family rather than a ge
 ## Capabilities and Constraints
 
 - Required core: hardware and storage diagnostics, model catalog, evidence-based recommendation, resumable verified downloads, install/remove, runtime lifecycle, health checks, streaming chat, local history, image input where supported, reasoning/context controls, and a local OpenAI-compatible endpoint.
-- The first vertical prototype accepts manually placed GGUF and PrismML `llama-server` files.
+- Version 0.2.0 bundles a signed PrismML runtime and installs curated GGUF files from the in-app catalog; manual paths remain an advanced option.
+- The catalog exposes the binary 1-bit Bonsai 27B separately from ternary Bonsai 2 27B in both PTQ1_0 and PQ2_0 packings, so packaging names are not presented as model families.
 - Ternary Bonsai 2 requires the PrismML llama.cpp fork; stock llama.cpp is not assumed compatible.
 - Memory thresholds are hypotheses until measured on real Macs. The interface must distinguish a recommendation from a verified compatibility result.
 - MCP tools and opt-in web search are planned extensions. OpenCode and Tailscale are planned integrations, not MVP blockers.
@@ -45,6 +46,7 @@ This is a focused, transparent home for the Bonsai model family rather than a ge
 ## Brand Commitments
 
 - Product name: **GZ Bonsai 27B**.
+- Primary mark: a flat forest-green rounded square with a white three-leaf bonsai; G, Z, and B are integrated into the leaves. The source is `src/assets/app-icon.svg`, with generated platform assets under `src-tauri/icons/`.
 - Credit: “Разработано Геннадием Захаровым” / “Developed by Gennadiy Zakharov”.
 - Author link: <https://zakharov.asia/>.
 - The interface should feel at home on macOS and be as direct as ChatGPT, without copying ChatGPT or Jan literally.
@@ -54,6 +56,7 @@ This is a focused, transparent home for the Bonsai model family rather than a ge
 
 - Product research and primary-source links are recorded in `README.md`.
 - Current PrismML model metadata and runtime release checks are recorded in `docs/verified-artifacts.md`.
+- A full native E2E has been run for Bonsai 1.7B: download, SHA-256 verification, Metal load, health check, and streamed Russian response.
 - No independent performance measurements or compatibility matrix exists yet; future work must not fabricate them.
 
 ## Product Principles

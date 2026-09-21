@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { type Locale, translate } from "./i18n";
+import appIcon from "./assets/app-icon.svg";
 
 type ServerPhase = "stopped" | "starting" | "ready" | "stopping" | "error";
 type Role = "user" | "assistant";
@@ -34,7 +35,49 @@ interface SystemInfo {
   freeDiskBytes: number;
 }
 
+interface CatalogModel {
+  id: string;
+  name: string;
+  description: string;
+  filename: string;
+  sizeBytes: number;
+  estimatedMemoryBytes: number;
+  contextSize: number;
+  installed: boolean;
+  installedPath?: string | null;
+}
+
+interface ManagedCatalog {
+  runtimeVersion: string;
+  runtimeInstalled: boolean;
+  runtimePath?: string | null;
+  models: CatalogModel[];
+}
+
+interface DownloadProgress {
+  id: string;
+  phase: "downloading" | "verifying" | "complete" | "paused" | "cancelled" | "error";
+  downloadedBytes: number;
+  totalBytes: number;
+  detail?: string | null;
+}
+
 const storageKey = "bonsai-desktop-settings-v1";
+const isTauri = "__TAURI_INTERNALS__" in window;
+
+const previewCatalog: ManagedCatalog = {
+  runtimeVersion: "prism-b10709-9a9394a",
+  runtimeInstalled: true,
+  runtimePath: "/Applications/GZ Bonsai 27B.app/Contents/Resources/runtime/llama-server",
+  models: [
+    { id: "bonsai-1.7b-q1", name: "Bonsai 1.7B · Q1_0", description: "", filename: "Bonsai-1.7B-Q1_0.gguf", sizeBytes: 248302272, estimatedMemoryBytes: 8 * 1024 ** 3, contextSize: 4096, installed: false },
+    { id: "bonsai-4b-q1", name: "Bonsai 4B · Q1_0", description: "", filename: "Bonsai-4B-Q1_0.gguf", sizeBytes: 572270624, estimatedMemoryBytes: 12 * 1024 ** 3, contextSize: 8192, installed: false },
+    { id: "bonsai-8b-q1", name: "Bonsai 8B · Q1_0", description: "", filename: "Bonsai-8B-Q1_0.gguf", sizeBytes: 1158654496, estimatedMemoryBytes: 16 * 1024 ** 3, contextSize: 16384, installed: false },
+    { id: "bonsai-27b-q1", name: "Bonsai 27B · 1-bit Q1_0", description: "", filename: "Bonsai-27B-Q1_0.gguf", sizeBytes: 3803452480, estimatedMemoryBytes: 16 * 1024 ** 3, contextSize: 8192, installed: false },
+    { id: "bonsai-2-27b-ptq1", name: "Bonsai 2 27B · ternary PTQ1_0", description: "", filename: "Ternary-Bonsai-2-27B-PTQ1_0.gguf", sizeBytes: 5946648928, estimatedMemoryBytes: 24 * 1024 ** 3, contextSize: 8192, installed: false },
+    { id: "bonsai-2-27b-pq2", name: "Bonsai 2 27B · ternary PQ2_0", description: "", filename: "Ternary-Bonsai-2-27B-PQ2_0.gguf", sizeBytes: 7206168928, estimatedMemoryBytes: 32 * 1024 ** 3, contextSize: 16384, installed: false },
+  ],
+};
 
 function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
@@ -71,7 +114,18 @@ export default function App() {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [reportCopied, setReportCopied] = useState(false);
   const [view, setView] = useState<View>("chat");
+  const [catalog, setCatalog] = useState<ManagedCatalog | null>(null);
+  const [activeDownload, setActiveDownload] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<Record<string, DownloadProgress>>({});
+  const [installError, setInstallError] = useState<string | null>(null);
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
+
+  async function refreshCatalog() {
+    const next = await invoke<ManagedCatalog>("managed_catalog");
+    setCatalog(next);
+    if (next.runtimePath) setRuntimePath((current: string) => current || next.runtimePath || "");
+    return next;
+  }
 
   useEffect(() => {
     localStorage.setItem(
@@ -82,6 +136,12 @@ export default function App() {
   }, [locale, runtimePath, modelPath, projectorPath, contextSize, port]);
 
   useEffect(() => {
+    if (!isTauri) {
+      setSystemInfo({ appVersion: "0.2.0", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
+      setCatalog(previewCatalog);
+      setRuntimePath(previewCatalog.runtimePath ?? "");
+      return;
+    }
     const unlistenLog = listen<string>("server-log", ({ payload }) => {
       setLogs((current) => [...current.slice(-199), payload]);
     });
@@ -99,10 +159,21 @@ export default function App() {
     });
     invoke<ServerStatus>("server_status").then(setStatus).catch(() => undefined);
     invoke<SystemInfo>("system_info").then(setSystemInfo).catch(() => undefined);
+    void refreshCatalog().catch((error) => setInstallError(String(error)));
     return () => {
       void unlistenLog.then((fn) => fn());
       void unlistenStatus.then((fn) => fn());
       void unlistenToken.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    const unlistenProgress = listen<DownloadProgress>("download-progress", ({ payload }) => {
+      setDownloadProgress((current) => ({ ...current, [payload.id]: payload }));
+    });
+    return () => {
+      void unlistenProgress.then((fn) => fn());
     };
   }, []);
 
@@ -163,6 +234,62 @@ export default function App() {
     }
   }
 
+  async function installManagedModel(model: CatalogModel) {
+    setInstallError(null);
+    setActiveDownload(model.id);
+    try {
+      const managedRuntime = await invoke<string>("install_runtime");
+      const installedModel = await invoke<string>("install_model", {
+        request: { modelId: model.id },
+      });
+      setRuntimePath(managedRuntime);
+      setModelPath(installedModel);
+      setProjectorPath("");
+      setContextSize(model.contextSize);
+      await refreshCatalog();
+    } catch (error) {
+      const message = String(error).toLowerCase();
+      if (!message.includes("cancel") && !message.includes("paused")) setInstallError(String(error));
+    } finally {
+      setActiveDownload(null);
+    }
+  }
+
+  async function pauseDownload(id: string) {
+    try {
+      await invoke("pause_install", { id });
+    } catch (error) {
+      setInstallError(String(error));
+    }
+  }
+
+  async function cancelDownload(id: string) {
+    try {
+      await invoke("cancel_install", { id });
+    } catch (error) {
+      setInstallError(String(error));
+    }
+  }
+
+  async function removeManagedModel(model: CatalogModel) {
+    setInstallError(null);
+    try {
+      await invoke("remove_model", { request: { modelId: model.id } });
+      if (modelPath === model.installedPath) setModelPath("");
+      await refreshCatalog();
+    } catch (error) {
+      setInstallError(String(error));
+    }
+  }
+
+  function useManagedModel(model: CatalogModel) {
+    if (!model.installedPath || !catalog?.runtimePath) return;
+    setRuntimePath(catalog.runtimePath);
+    setModelPath(model.installedPath);
+    setProjectorPath("");
+    setContextSize(model.contextSize);
+  }
+
   async function sendMessage() {
     const content = draft.trim();
     if (!content || activeRequest || status.phase !== "ready") return;
@@ -188,6 +315,13 @@ export default function App() {
 
   const phaseLabel = status.phase === "ready" ? t("ready") : status.phase === "starting" ? t("starting") : status.phase === "stopping" ? t("stopping") : status.phase === "error" ? t("error") : t("stopped");
   const canStart = runtimePath && modelPath && status.phase !== "starting" && status.phase !== "ready";
+  const recommendedModel = useMemo(() => {
+    if (!catalog?.models.length) return null;
+    const memory = systemInfo?.memoryBytes ?? 0;
+    return [...catalog.models]
+      .filter((model) => memory >= model.estimatedMemoryBytes)
+      .sort((a, b) => b.estimatedMemoryBytes - a.estimatedMemoryBytes || b.sizeBytes - a.sizeBytes)[0] ?? catalog.models[0];
+  }, [catalog, systemInfo]);
 
   return (
     <main className="app-shell">
@@ -216,7 +350,25 @@ export default function App() {
         {view === "models" && <div className="content-page">
           <header className="page-heading"><div><h1>{t("modelsTitle")}</h1><p>{t("modelsDescription")}</p></div><div className={`status ${status.phase}`}><i /><span>{phaseLabel}</span></div></header>
           <div className="system-strip"><div><small>{t("system")}</small><strong>{systemInfo?.chip ?? "—"}</strong><span>{systemInfo?.architecture ?? "—"} · macOS {systemInfo?.macosVersion ?? "—"}</span></div><div><small>{t("memory")}</small><strong>{formatBytes(systemInfo?.memoryBytes ?? 0, locale)}</strong></div><div><small>{t("disk")}</small><strong>{formatBytes(systemInfo?.freeDiskBytes ?? 0, locale)}</strong></div></div>
-          <section className="settings-form"><FileField label={t("runtime")} value={runtimePath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("runtime")} /><FileField label={t("model")} value={modelPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("model")} /><FileField label={t("projector")} value={projectorPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("projector")} /><div className="field-row"><label>{t("context")}<select value={contextSize} onChange={(event) => setContextSize(Number(event.target.value))} disabled={status.phase === "ready"}><option value={4096}>4K</option><option value={8192}>8K</option><option value={16384}>16K</option><option value={32768}>32K</option></select></label><label>{t("port")}<input type="number" min={1024} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} disabled={status.phase === "ready"} /></label></div><div className="compatibility-note"><strong>{t("compatibleNote")}</strong><span>{t("manualNote")}</span></div>{status.detail && <p className="status-detail">{status.detail}</p>}<div className="form-actions">{status.phase === "ready" || status.phase === "stopping" ? <button className="primary stop" onClick={stopServer} disabled={status.phase === "stopping"}>{t("stop")}</button> : <button className="primary" onClick={startServer} disabled={!canStart}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div></section>
+          <section className="catalog-section">
+            <div className="section-heading"><div><h2>{t("catalogTitle")}</h2><p>{t("catalogDescription")}</p></div>{catalog && <span className={`runtime-pill ${catalog.runtimeInstalled ? "ready" : ""}`}>{catalog.runtimeInstalled ? t("runtimeIncluded") : t("runtimeMissing")}</span>}</div>
+            <div className="model-grid">{catalog?.models.map((model) => {
+              const progress = downloadProgress[model.id];
+              const isActive = activeDownload === model.id;
+              const percent = progress?.totalBytes ? Math.min(100, Math.round(progress.downloadedBytes / progress.totalBytes * 100)) : 0;
+              const selected = model.installedPath === modelPath;
+              return <article className={`model-card ${recommendedModel?.id === model.id ? "recommended" : ""}`} key={model.id}>
+                <div className="model-card-title"><div><strong>{model.name}</strong>{recommendedModel?.id === model.id && <span>{t("recommended")}</span>}</div><small>{formatBytes(model.sizeBytes, locale)}</small></div>
+                <p>{model.id.includes("1.7b") ? t("modelHint17") : model.id.includes("4b") ? t("modelHint4") : model.id.includes("8b") ? t("modelHint8") : model.id === "bonsai-27b-q1" ? t("modelHint1bit") : model.id.includes("ptq1") ? t("modelHintTernaryCompact") : t("modelHintTernaryFast")}</p>
+                <div className="model-meta"><span>{t("memoryEstimate")}: {formatBytes(model.estimatedMemoryBytes, locale)}+</span><span>{t("context")}: {model.contextSize / 1024}K</span></div>
+                {isActive && progress && <div className="download-state"><div><span>{progress.phase === "verifying" ? t("verifying") : t("downloading")}</span><strong>{percent}%</strong></div><progress max="100" value={percent} /></div>}
+                <div className="model-actions">{isActive ? <><button className="quiet" onClick={() => pauseDownload(model.id)}>{t("pause")}</button><button className="quiet danger" onClick={() => cancelDownload(model.id)}>{t("cancel")}</button></> : model.installed ? <><button className="quiet" onClick={() => useManagedModel(model)} disabled={selected}>{selected ? t("selected") : t("useModel")}</button><button className="quiet danger" onClick={() => removeManagedModel(model)} disabled={status.phase === "ready" || selected}>{t("remove")}</button></> : <button className="quiet install" onClick={() => installManagedModel(model)} disabled={Boolean(activeDownload)}>{progress?.phase === "paused" ? t("resume") : t("install")}</button>}</div>
+              </article>;
+            })}</div>
+            {installError && <p className="status-detail">{installError}</p>}
+          </section>
+          <details className="manual-setup"><summary>{t("advancedSetup")}</summary><section className="settings-form"><FileField label={t("runtime")} value={runtimePath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("runtime")} /><FileField label={t("model")} value={modelPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("model")} /><FileField label={t("projector")} value={projectorPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("projector")} /><div className="field-row"><label>{t("context")}<select value={contextSize} onChange={(event) => setContextSize(Number(event.target.value))} disabled={status.phase === "ready"}><option value={4096}>4K</option><option value={8192}>8K</option><option value={16384}>16K</option><option value={32768}>32K</option></select></label><label>{t("port")}<input type="number" min={1024} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} disabled={status.phase === "ready"} /></label></div><div className="compatibility-note"><strong>{t("compatibleNote")}</strong><span>{t("manualNote")}</span></div></section></details>
+          {status.detail && <p className="status-detail model-status">{status.detail}</p>}<div className="form-actions model-start">{status.phase === "ready" || status.phase === "stopping" ? <button className="primary stop" onClick={stopServer} disabled={status.phase === "stopping"}>{t("stop")}</button> : <button className="primary" onClick={startServer} disabled={!canStart}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div>
         </div>}
         {view === "diagnostics" && <div className="content-page narrow"><header className="page-heading"><div><h1>{t("diagnostics")}</h1><p>{t("debugPrivacy")}</p></div><button className="primary" onClick={copyDiagnosticReport}>{reportCopied ? t("reportCopied") : t("copyReport")}</button></header><div className="diagnostic-list"><InfoRow label={t("system")} value={`${systemInfo?.chip ?? "—"} · ${systemInfo?.architecture ?? "—"} · macOS ${systemInfo?.macosVersion ?? "—"}`} /><InfoRow label={t("memory")} value={formatBytes(systemInfo?.memoryBytes ?? 0, locale)} /><InfoRow label={t("disk")} value={formatBytes(systemInfo?.freeDiskBytes ?? 0, locale)} /><InfoRow label={t("localModel")} value={modelPath ? fileName(modelPath) : t("notSelected")} /><InfoRow label="Endpoint" value={`http://127.0.0.1:${port}/v1`} /></div><details className="logs"><summary>{t("logs")}<button onClick={(event) => { event.preventDefault(); setLogs([]); }}>{t("clear")}</button></summary><pre>{logs.join("\n") || "—"}</pre></details></div>}
         {view === "about" && <div className="content-page narrow about-page"><Logo /><h1>{t("aboutTitle")}</h1><p>{t("aboutText")}</p><div className="about-links"><a href="https://zakharov.asia/" target="_blank" rel="noreferrer">{t("website")} <ExternalIcon /></a><a href="https://github.com/globa-me/gz-bonsai-27b" target="_blank" rel="noreferrer">{t("sourceCode")} <ExternalIcon /></a></div><small>{t("developedBy")}</small></div>}
@@ -229,7 +381,7 @@ function FileField({ label, value, empty, choose, onChoose }: { label: string; v
   return <div className="file-field"><label>{label}</label><button onClick={onChoose}><span className={value ? "" : "placeholder"}>{value ? fileName(value) : empty}</span><strong>{choose}</strong></button></div>;
 }
 
-function Logo({ small = false }: { small?: boolean }) { return <svg className={`logo ${small ? "small" : ""}`} viewBox="0 0 32 32" aria-hidden="true"><path d="M16 25V12M16 16c-4.5-5.2-9-4.5-11-3.4.8 6 5.3 8.4 10 7.2M16 12c3.5-6.3 8.5-7.2 11-6.1-.1 6.5-4.3 9.6-10.4 9.2M10 25h12" /></svg>; }
+function Logo({ small = false }: { small?: boolean }) { return <img className={`logo ${small ? "small" : ""}`} src={appIcon} alt="" aria-hidden="true" />; }
 function SendIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 15V5m0 0L6 9m4-4 4 4" /></svg>; }
 function ChevronIcon() { return <svg className="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6.5 3 3 3-3" /></svg>; }
 function ExternalIcon() { return <svg className="external" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h6v6M12 4 4 12" /></svg>; }

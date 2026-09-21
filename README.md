@@ -2,7 +2,7 @@
 <h1 align="center">GZ Bonsai 27B</h1>
 <p align="center">Простое открытое macOS-приложение для приватного запуска моделей Bonsai на своём Mac.</p>
 <p align="center">
-  <a href="https://github.com/globa-me/gz-bonsai-27b/releases/tag/v0.1.0"><img alt="Preview 0.1.0" src="https://img.shields.io/badge/preview-0.1.0-2f6949" /></a>
+  <a href="https://github.com/globa-me/gz-bonsai-27b/releases/tag/v0.2.0"><img alt="Release 0.2.0" src="https://img.shields.io/badge/release-0.2.0-2f6949" /></a>
   <img alt="macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-2f6949" />
   <img alt="License MIT" src="https://img.shields.io/badge/code-MIT-dceee2" />
 </p>
@@ -11,9 +11,9 @@
 
 ## Скачать
 
-[Скачать GZ Bonsai 27B 0.1.0 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.1.0/GZ-Bonsai-27B-0.1.0-arm64.dmg) — подписанный и нотариально заверенный Apple DMG. Перетащите приложение в папку Applications.
+[Скачать GZ Bonsai 27B 0.2.0 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.2.0/GZ-Bonsai-27B-0.2.0-arm64.dmg) — подписанный и нотариально заверенный Apple DMG. Перетащите приложение в папку Applications.
 
-Версия `0.1.0` — предварительный выпуск: чат уже работает с вручную выбранными runtime и GGUF, а встроенная загрузка моделей появится позже.
+Совместимый runtime уже находится внутри приложения. Откройте «Модели», скачайте выбранный вариант и запустите локальный чат — Terminal не нужен.
 
 ## Зачем нужен проект
 
@@ -30,11 +30,16 @@
 
 ## Что уже работает
 
-Текущий `0.1.0` — проверяемый вертикальный прототип для macOS на Apple Silicon:
+Текущий `0.2.0` — рабочая версия для macOS на Apple Silicon:
 
 - Tauri 2 + React + TypeScript;
 - нативное определение чипа, архитектуры, RAM, версии macOS и свободного места;
-- ручной выбор совместимого `llama-server`, GGUF-модели и необязательного `mmproj`;
+- подписанный PrismML `llama-server` внутри приложения;
+- каталог Bonsai 1.7B, 4B, 8B, полной 1-битной Bonsai 27B и двух упаковок ternary Bonsai 2 27B;
+- консервативная рекомендация модели и контекста по общей памяти Mac;
+- загрузка с паузой, возобновлением, отменой, проверкой размера и SHA-256;
+- безопасное удаление установленных моделей;
+- ручной выбор собственного GGUF и необязательного `mmproj` в расширенных настройках;
 - запуск процесса только на localhost, проверка занятого порта и health check;
 - потоковый ответ через `/v1/chat/completions`;
 - корректная остановка процесса и остановка при закрытии приложения;
@@ -42,26 +47,24 @@
 - безопасный копируемый диагностический отчёт;
 - подписанная сборка Developer ID и DMG с перетаскиванием в Applications.
 
-![Настройка локальной модели](docs/images/model-settings.png)
+![Каталог и рекомендация модели](docs/images/model-catalog.png)
 
 ## Что ещё не готово
 
-- автоматическая установка проверенного PrismML runtime;
-- каталог и скачивание Bonsai 1.7B, 4B, 8B и 27B с паузой, возобновлением и SHA-256;
-- рекомендация модели и контекста после измерений на реальных Mac;
+- измеренная матрица RAM, скорости и контекста для разных M-series — текущая рекомендация явно является оценкой;
 - история и переименование чатов;
 - загрузка изображений;
 - MCP-инструменты и включаемый веб-поиск;
 - интеграции OpenCode и Tailscale;
-- публичный стабильный релиз после завершения встроенной загрузки моделей.
+- автоматическое обновление — новые версии намеренно устанавливаются вручную из GitHub Releases.
 
 ## Почему нужен PrismML llama.cpp
 
-Ternary Bonsai 2 27B использует форматы `PTQ1_0` и `PQ2_0`, которым требуется форк `PrismML-Eng/llama.cpp` версии `prism-b10658` или новее. Обычная сборка upstream llama.cpp для Bonsai 2 не считается совместимой.
+В каталоге 27B намеренно разделены две технологии: бинарная **Bonsai 27B 1-bit** (`Q1_0`, 3,80 ГБ) и тернарная **Bonsai 2 27B** (`PTQ1_0`, 5,95 ГБ; `PQ2_0`, 7,21 ГБ). Для этих специальных форматов используется встроенный форк `PrismML-Eng/llama.cpp`; обычная сборка upstream llama.cpp не считается совместимой.
 
 Актуальные проверенные имена файлов, размеры, SHA-256 и лицензии записаны в [docs/verified-artifacts.md](docs/verified-artifacts.md).
 
-## Запуск прототипа
+## Запуск из исходников
 
 Требования: macOS 13+, Apple Silicon, Node.js, Rust stable и Xcode Command Line Tools.
 
@@ -70,7 +73,7 @@ npm install
 npm run tauri -- dev
 ```
 
-В приложении откройте «Модели» и укажите совместимый `llama-server`, GGUF-файл, необязательный `mmproj` и безопасный размер контекста. После health check откроется локальный чат. Полные инструкции: [docs/development.md](docs/development.md).
+В приложении откройте «Модели», скачайте вариант из каталога и нажмите «Запустить модель». Ручной выбор `llama-server`, GGUF и `mmproj` остаётся в дополнительных параметрах. Полные инструкции: [docs/development.md](docs/development.md).
 
 ## Проверка
 
@@ -80,7 +83,7 @@ npm run build
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-Тесты проверяют синхронность RU/EN-каталогов, обязательный bind к loopback, аргументы vision projector и разбор OpenAI SSE-потока.
+Тесты проверяют синхронность RU/EN-каталогов, целостность manifest моделей, обязательный bind к loopback, аргументы vision projector и разбор OpenAI SSE-потока.
 
 Дополнительно выполнен реальный smoke-тест на Apple M3 Pro: официальный runtime `prism-b10709-9a9394a` загрузил Bonsai 1.7B Q1_0, прошёл health check и вернул потоковый ответ. Условия и границы проверки: [docs/smoke-test-2026-09-21.md](docs/smoke-test-2026-09-21.md).
 
@@ -95,7 +98,9 @@ npm run tauri -- build --bundles dmg
 ## Архитектура и безопасность
 
 - React отвечает за интерфейс и локализацию.
-- Rust проверяет файлы, управляет `llama-server`, выполняет health check и проксирует streaming API через Tauri events.
+- Rust управляет проверяемыми загрузками, `llama-server`, health check и streaming API через Tauri events.
+- Все сетевые артефакты закреплены commit URL, размером и SHA-256; готовый GGUF появляется только после проверки и атомарного переименования.
+- Runtime и его dylib подписаны Developer ID и находятся внутри нотариально заверенного app bundle.
 - Полные пути удаляются из диагностического отчёта.
 - Веса `*.gguf`, временные загрузки и build-артефакты исключены из Git.
 - Сетевой адрес жёстко ограничен `127.0.0.1`.

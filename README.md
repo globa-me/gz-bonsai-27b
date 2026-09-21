@@ -2,7 +2,7 @@
 <h1 align="center">GZ Bonsai 27B</h1>
 <p align="center">Простое открытое macOS-приложение для приватного запуска моделей Bonsai на своём Mac.</p>
 <p align="center">
-  <a href="https://github.com/globa-me/gz-bonsai-27b/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/globa-me/gz-bonsai-27b/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://github.com/globa-me/gz-bonsai-27b/releases/tag/v0.1.0"><img alt="Preview 0.1.0" src="https://img.shields.io/badge/preview-0.1.0-2f6949" /></a>
   <img alt="macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-2f6949" />
   <img alt="License MIT" src="https://img.shields.io/badge/code-MIT-dceee2" />
 </p>

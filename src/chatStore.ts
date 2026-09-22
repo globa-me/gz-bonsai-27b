@@ -1,3 +1,5 @@
+import type { MessageMetrics } from "./chatMetrics";
+
 export interface Attachment {
   id: string;
   name: string;
@@ -19,6 +21,7 @@ export interface ChatMessage {
   content: string;
   attachments?: Attachment[];
   sources?: SearchSource[];
+  metrics?: MessageMetrics;
 }
 
 export interface ChatSession {
@@ -27,6 +30,7 @@ export interface ChatSession {
   createdAt: number;
   updatedAt: number;
   messages: ChatMessage[];
+  titleSource?: "auto" | "user";
 }
 
 const databaseName = "gz-bonsai-27b";
@@ -72,5 +76,14 @@ export async function saveChats(chats: ChatSession[]): Promise<void> {
 
 export function createChat(title: string): ChatSession {
   const now = Date.now();
-  return { id: crypto.randomUUID(), title, createdAt: now, updatedAt: now, messages: [] };
+  return { id: crypto.randomUUID(), title, createdAt: now, updatedAt: now, messages: [], titleSource: "auto" };
+}
+
+export function normalizeChatTitle(value: string): string {
+  return value.trim().replace(/\s+/g, " ").slice(0, 80);
+}
+
+export function renameChatSession(chat: ChatSession, value: string): ChatSession {
+  const title = normalizeChatTitle(value);
+  return title ? { ...chat, title, titleSource: "user" } : chat;
 }

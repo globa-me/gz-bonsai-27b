@@ -17,7 +17,9 @@ Frontend отдельно можно открыть через `npm run dev`, н
 ```bash
 npm test
 npm run build
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo test --locked --manifest-path src-tauri/Cargo.toml
+cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
 ## Релизный чек-лист
@@ -31,3 +33,35 @@ cargo test --manifest-path src-tauri/Cargo.toml
 7. Только затем прикрепить DMG к GitHub Release.
 
 Встроенного автообновления намеренно нет. Новая версия публикуется отдельным GitHub Release.
+
+## Apple signing и notarization
+
+Несекретные параметры релиза:
+
+- Developer ID: `Developer ID Application: Gennadiy Zakharov (BN3D9H4C7J)`;
+- Apple ID: `global_corp@mail.ru`;
+- Team ID: `BN3D9H4C7J`;
+- профиль `notarytool` в macOS Keychain: `GZB-notary`.
+
+Пароль приложения и другие секреты в проект не записываются. Проверить сохранённый профиль без раскрытия секрета можно командой:
+
+```bash
+xcrun notarytool history --keychain-profile "GZB-notary"
+```
+
+Tauri подписывает app bundle и DMG через доступный сертификат Developer ID. После сборки DMG нужно переименовать с генерируемого суффикса `_x64` в `-arm64`: на Apple Silicon текущий bundler использует ошибочное имя файла, хотя `file Contents/MacOS/bonsai-desktop` подтверждает arm64.
+
+Финальная последовательность:
+
+```bash
+xcrun notarytool submit "GZ-Bonsai-27B-VERSION-arm64.dmg" \
+  --keychain-profile "GZB-notary" \
+  --wait
+xcrun stapler staple "GZ-Bonsai-27B-VERSION-arm64.dmg"
+xcrun stapler validate "GZ-Bonsai-27B-VERSION-arm64.dmg"
+spctl --assess --type open --context context:primary-signature -vv \
+  "GZ-Bonsai-27B-VERSION-arm64.dmg"
+hdiutil verify "GZ-Bonsai-27B-VERSION-arm64.dmg"
+```
+
+Если профиль Keychain перестал работать, пересоздать его следует вручную через `xcrun notarytool store-credentials "GZB-notary"`; секрет не передавать в чат и не добавлять в Git.

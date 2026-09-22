@@ -340,6 +340,7 @@ fn free_disk_bytes() -> u64 {
         .saturating_mul(1024)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_file(
     app: &AppHandle,
     client: &Client,

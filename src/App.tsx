@@ -6,7 +6,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { type Locale, translate } from "./i18n";
 import appIcon from "./assets/app-icon.png";
 import { MarkdownMessage } from "./MarkdownMessage";
-import { createChat, loadChats, saveChats, type Attachment, type ChatMessage, type ChatSession, type SearchSource } from "./chatStore";
+import { createChat, loadChats, renameChatSession, saveChats, type Attachment, type ChatMessage, type ChatSession, type SearchSource } from "./chatStore";
+import { summarizeMetrics, type MessageMetrics } from "./chatMetrics";
 import { resolveRuntimePath } from "./runtimeSelection";
 
 type ServerPhase = "stopped" | "starting" | "ready" | "stopping" | "error";
@@ -106,6 +107,18 @@ function formatBytes(bytes: number, locale: Locale) {
   return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(bytes / 1024 ** 3) + " GB";
 }
 
+function formatCount(value: number, locale: Locale) {
+  return new Intl.NumberFormat(locale).format(value);
+}
+
+function formatSpeed(value: number, locale: Locale) {
+  return new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value);
+}
+
+function formatDuration(milliseconds: number, locale: Locale) {
+  return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(milliseconds / 1000)} ${locale === "ru" ? "с" : "s"}`;
+}
+
 export default function App() {
   const saved = useMemo(() => {
     try {
@@ -124,6 +137,8 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [editingChatTitle, setEditingChatTitle] = useState("");
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [draft, setDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
@@ -142,6 +157,10 @@ export default function App() {
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
   const messages = activeChat?.messages ?? [];
+  const chatMetrics = useMemo(
+    () => summarizeMetrics(messages.map((message) => message.role === "assistant" ? message.metrics : undefined)),
+    [messages],
+  );
 
   async function refreshCatalog() {
     const next = await invoke<ManagedCatalog>("managed_catalog");
@@ -186,7 +205,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauri) {
-      setSystemInfo({ appVersion: "0.2.0", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
+      setSystemInfo({ appVersion: "0.4.0", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
       setCatalog(previewCatalog);
       setRuntimePath(previewCatalog.runtimePath ?? "");
       return;
@@ -402,8 +421,43 @@ export default function App() {
 
   function updateChatMessages(chatId: string, update: (messages: ChatMessage[]) => ChatMessage[], title?: string) {
     setChats((current) => current.map((chat) => chat.id === chatId
-      ? { ...chat, title: title ?? chat.title, updatedAt: Date.now(), messages: update(chat.messages) }
+      ? {
+        ...chat,
+        title: title && chat.titleSource !== "user" ? title : chat.title,
+        updatedAt: Date.now(),
+        messages: update(chat.messages),
+      }
       : chat));
+  }
+
+  function startRenamingChat(chat: ChatSession) {
+    setEditingChatId(chat.id);
+    setEditingChatTitle(chat.title);
+  }
+
+  function commitChatRename() {
+    if (!editingChatId) return;
+    setChats((current) => current.map((chat) => chat.id === editingChatId
+      ? renameChatSession(chat, editingChatTitle)
+      : chat));
+    setEditingChatId(null);
+    setEditingChatTitle("");
+  }
+
+  function deleteChat(chat: ChatSession) {
+    if (!window.confirm(`${t("confirmDeleteChat")} “${chat.title}”?`)) return;
+    const remaining = chats.filter((item) => item.id !== chat.id);
+    if (activeChatId === chat.id) {
+      const next = [...remaining].sort((a, b) => b.updatedAt - a.updatedAt)[0]
+        ?? createChat(t("untitledChat"));
+      if (!remaining.length) remaining.push(next);
+      setActiveChatId(next.id);
+      setDraft("");
+      setPendingAttachments([]);
+      setAttachmentError(null);
+      setView("chat");
+    }
+    setChats(remaining);
   }
 
   function apiContent(message: ChatMessage): string | Array<Record<string, unknown>> {
@@ -462,7 +516,12 @@ export default function App() {
     setAttachmentError(null);
     setActiveRequest(requestId);
     try {
-      await invoke("stream_chat", { request: { requestId, port, messages: history } });
+      const metrics = await invoke<MessageMetrics | null>("stream_chat", { request: { requestId, port, messages: history } });
+      if (metrics) {
+        updateChatMessages(chatId, (current) => current.map((message) =>
+          message.id === requestId ? { ...message, metrics } : message,
+        ));
+      }
     } catch (error) {
       updateChatMessages(chatId, (current) => current.map((message) =>
           message.id === requestId ? { ...message, content: String(error) } : message,
@@ -494,7 +553,32 @@ export default function App() {
         </nav>
         <div className="chat-history">
           <small>{t("recentChats")}</small>
-          <div>{[...chats].sort((a, b) => b.updatedAt - a.updatedAt).map((chat) => <button key={chat.id} className={view === "chat" && activeChatId === chat.id ? "active" : ""} onClick={() => { setActiveChatId(chat.id); setView("chat"); }}>{chat.title}</button>)}</div>
+          <div>{[...chats].sort((a, b) => b.updatedAt - a.updatedAt).map((chat) => editingChatId === chat.id
+            ? <form className="chat-title-form" key={chat.id} onSubmit={(event) => { event.preventDefault(); commitChatRename(); }}>
+              <input
+                className="chat-title-input"
+                value={editingChatTitle}
+                maxLength={80}
+                autoFocus
+                aria-label={t("renameChat")}
+                onChange={(event) => setEditingChatTitle(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setEditingChatId(null);
+                    setEditingChatTitle("");
+                  }
+                }}
+              />
+              <button type="submit" aria-label={t("save")}>✓</button>
+              <button type="button" aria-label={t("cancel")} onClick={() => { setEditingChatId(null); setEditingChatTitle(""); }}>×</button>
+            </form>
+            : <div className="chat-history-row" key={chat.id}>
+              <button className={view === "chat" && activeChatId === chat.id ? "active" : ""} onClick={() => { setActiveChatId(chat.id); setView("chat"); }}>{chat.title}</button>
+              <div className="chat-actions">
+                <button aria-label={`${t("renameChat")}: ${chat.title}`} title={t("renameChat")} onClick={() => startRenamingChat(chat)}>✎</button>
+                <button aria-label={`${t("deleteChat")}: ${chat.title}`} title={t("deleteChat")} onClick={() => deleteChat(chat)} disabled={Boolean(activeRequest && activeChatId === chat.id)}>×</button>
+              </div>
+            </div>)}</div>
         </div>
         <div className="sidebar-footer">
           <div className="privacy"><span className="privacy-dot" />{t("privacy")}</div>
@@ -504,9 +588,9 @@ export default function App() {
       </aside>
       <section className="main-pane">
         {view === "chat" && <>
-          <header className="pane-bar"><button className="model-picker" onClick={() => setView("models")}><Logo small /><span><small>{t("localModel")}</small>{status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))}</span><ChevronIcon /></button><details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer}>{t("stopModel")}</button>}</div></details></header>
+          <header className="pane-bar"><button className="model-picker" onClick={() => setView("models")}><Logo small /><span><small>{t("localModel")}</small>{status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))}</span><ChevronIcon /></button>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer}>{t("stopModel")}</button>}</div></details></header>
           <div className={`conversation ${messages.length === 0 ? "is-empty" : ""}`}>
-            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{status.phase === "ready" ? t("chatWelcome") : t("chooseModelFirst")}</h1>{status.phase !== "ready" && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? <MarkdownMessage>{message.content || (activeRequest === message.id ? t("generating") : "")}</MarkdownMessage> : <div className="plain-message">{message.content}</div>}{message.sources?.length ? <div className="sources"><small>{t("sources")}</small>{message.sources.map((source, index) => <ExternalLink href={source.url} key={source.url}>{index + 1}. {source.title}</ExternalLink>)}</div> : null}</div></article>)}
+            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{status.phase === "ready" ? t("chatWelcome") : t("chooseModelFirst")}</h1>{status.phase !== "ready" && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? <MarkdownMessage>{message.content || (activeRequest === message.id ? t("generating") : "")}</MarkdownMessage> : <div className="plain-message">{message.content}</div>}{message.sources?.length ? <div className="sources"><small>{t("sources")}</small>{message.sources.map((source, index) => <ExternalLink href={source.url} key={source.url}>{index + 1}. {source.title}</ExternalLink>)}</div> : null}{message.role === "assistant" && message.metrics && <div className="message-metrics" title={`${t("promptTokens")}: ${formatCount(message.metrics.promptTokens, locale)} · ${t("totalTokens")}: ${formatCount(message.metrics.totalTokens, locale)}`}>{formatCount(message.metrics.completionTokens, locale)} {t("outputTokensUnit")} · {formatSpeed(message.metrics.tokensPerSecond, locale)} {t("tokensPerSecond")} · {formatDuration(message.metrics.elapsedMs, locale)}</div>}</div></article>)}
           </div>
           <div className="composer-wrap">{pendingAttachments.length ? <div className="pending-attachments">{pendingAttachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? <img src={attachment.content} alt="" /> : <FileIcon />}<span>{attachment.name}</span><button onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))} aria-label={t("removeAttachment")}>×</button></span>)}</div> : null}{attachmentError && <div className="composer-error">{attachmentError}</div>}<div className="composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={t("placeholder")} disabled={status.phase !== "ready" || Boolean(activeRequest)} rows={2} /><div className="composer-actions"><button className="tool-button" onClick={chooseAttachments} disabled={status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /></button><button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={() => setWebSearchEnabled((value) => !value)} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} title={t("webSearchDisclosure")}><GlobeIcon /></button><button className="send-button" onClick={sendMessage} disabled={(!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching} aria-label={t("send")}><SendIcon /></button></div></div>{webSearchEnabled && <div className="search-disclosure">{searching ? t("searchingWeb") : t("webSearchDisclosure")}</div>}</div>
         </>}

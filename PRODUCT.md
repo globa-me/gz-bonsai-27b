@@ -4,7 +4,7 @@
 
 ## Platform
 
-web
+macOS desktop
 
 ## Stack
 
@@ -35,11 +35,11 @@ This is a focused, transparent home for the Bonsai model family rather than a ge
 ## Capabilities and Constraints
 
 - Required core: hardware and storage diagnostics, model catalog, evidence-based recommendation, resumable verified downloads, install/remove, runtime lifecycle, health checks, streaming chat, local history, image input where supported, reasoning/context controls, and a local OpenAI-compatible endpoint.
-- Version 0.2.0 bundles a signed PrismML runtime and installs curated GGUF files from the in-app catalog; manual paths remain an advanced option.
+- Version 0.4.0 bundles a signed PrismML runtime and installs curated GGUF files from the in-app catalog; manual paths remain an advanced option.
 - The catalog exposes the binary 1-bit Bonsai 27B separately from ternary Bonsai 2 27B in both PTQ1_0 and PQ2_0 packings, so packaging names are not presented as model families.
 - Ternary Bonsai 2 requires the PrismML llama.cpp fork; stock llama.cpp is not assumed compatible.
 - Memory thresholds are hypotheses until measured on real Macs. The interface must distinguish a recommendation from a verified compatibility result.
-- MCP tools and opt-in web search are planned extensions. OpenCode and Tailscale are planned integrations, not MVP blockers.
+- Opt-in web search is implemented. MCP tools, OpenCode, and Tailscale remain planned integrations, not MVP blockers.
 - Model weights must never be committed to Git.
 - User secrets must eventually be stored in Keychain and never copied into diagnostic reports.
 
@@ -57,6 +57,7 @@ This is a focused, transparent home for the Bonsai model family rather than a ge
 - Product research and primary-source links are recorded in `README.md`.
 - Current PrismML model metadata and runtime release checks are recorded in `docs/verified-artifacts.md`.
 - A full native E2E has been run for Bonsai 1.7B: download, SHA-256 verification, Metal load, health check, and streamed Russian response.
+- A native E2E has verified exact token usage and llama.cpp timing metadata for streamed Bonsai 1.7B responses.
 - No independent performance measurements or compatibility matrix exists yet; future work must not fabricate them.
 
 ## Product Principles

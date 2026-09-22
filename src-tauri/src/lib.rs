@@ -7,7 +7,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener},
     path::{Path, PathBuf},
     process::{Command as StdCommand, Stdio},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
@@ -83,6 +83,27 @@ struct ChatRequest {
 struct TokenEvent {
     request_id: String,
     content: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatMetrics {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+    elapsed_ms: u64,
+    tokens_per_second: f64,
+    prompt_tokens_per_second: Option<f64>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct SseChunk {
+    content: Option<String>,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    tokens_per_second: Option<f64>,
+    prompt_tokens_per_second: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -564,7 +585,7 @@ async fn server_status(state: State<'_, AppState>) -> Result<ServerStatus, Strin
     Ok(managed.status.clone())
 }
 
-fn parse_sse_line(line: &[u8]) -> Result<Option<String>, String> {
+fn parse_sse_line(line: &[u8]) -> Result<Option<SseChunk>, String> {
     let line = std::str::from_utf8(line)
         .map_err(|error| error.to_string())?
         .trim();
@@ -577,9 +598,47 @@ fn parse_sse_line(line: &[u8]) -> Result<Option<String>, String> {
     }
     let value: serde_json::Value = serde_json::from_str(data)
         .map_err(|error| format!("Invalid streaming response: {error}"))?;
-    Ok(value["choices"][0]["delta"]["content"]
+    let content = value["choices"][0]["delta"]["content"]
         .as_str()
-        .map(ToOwned::to_owned))
+        .map(ToOwned::to_owned);
+    let usage = value.get("usage");
+    let timings = value.get("timings");
+    Ok(Some(SseChunk {
+        content,
+        prompt_tokens: usage
+            .and_then(|item| item.get("prompt_tokens"))
+            .and_then(serde_json::Value::as_u64)
+            .or_else(|| {
+                timings.map(|item| {
+                    let prompt = item
+                        .get("prompt_n")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default();
+                    let cached = item
+                        .get("cache_n")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or_default();
+                    prompt.saturating_add(cached)
+                })
+            }),
+        completion_tokens: usage
+            .and_then(|item| item.get("completion_tokens"))
+            .and_then(serde_json::Value::as_u64)
+            .or_else(|| {
+                timings
+                    .and_then(|item| item.get("predicted_n"))
+                    .and_then(serde_json::Value::as_u64)
+            }),
+        total_tokens: usage
+            .and_then(|item| item.get("total_tokens"))
+            .and_then(serde_json::Value::as_u64),
+        tokens_per_second: timings
+            .and_then(|item| item.get("predicted_per_second"))
+            .and_then(serde_json::Value::as_f64),
+        prompt_tokens_per_second: timings
+            .and_then(|item| item.get("prompt_per_second"))
+            .and_then(serde_json::Value::as_f64),
+    }))
 }
 
 #[tauri::command]
@@ -587,7 +646,7 @@ async fn stream_chat(
     app: AppHandle,
     state: State<'_, AppState>,
     request: ChatRequest,
-) -> Result<(), String> {
+) -> Result<Option<ChatMetrics>, String> {
     {
         let managed = state.server.lock().await;
         if !matches!(managed.status.phase, ServerPhase::Ready)
@@ -596,6 +655,7 @@ async fn stream_chat(
             return Err("The local model is not ready".into());
         }
     }
+    let started_at = Instant::now();
     let response = state
         .client
         .post(format!(
@@ -606,6 +666,8 @@ async fn stream_chat(
             "model": "bonsai",
             "messages": request.messages,
             "stream": true,
+            "stream_options": { "include_usage": true },
+            "timings_per_token": true,
             "temperature": 0.5,
             "top_p": 0.85,
             "top_k": 20,
@@ -622,11 +684,38 @@ async fn stream_chat(
 
     let mut stream = response.bytes_stream();
     let mut buffer = Vec::<u8>::new();
+    let mut prompt_tokens = None;
+    let mut completion_tokens = None;
+    let mut total_tokens = None;
+    let mut tokens_per_second = None;
+    let mut prompt_tokens_per_second = None;
     while let Some(chunk) = stream.next().await {
         buffer.extend_from_slice(&chunk.map_err(|error| format!("Stream interrupted: {error}"))?);
         while let Some(position) = buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = buffer.drain(..=position).collect();
-            if let Some(content) = parse_sse_line(&line)? {
+            if let Some(parsed) = parse_sse_line(&line)? {
+                if let Some(content) = parsed.content {
+                    app.emit(
+                        "chat-token",
+                        TokenEvent {
+                            request_id: request.request_id.clone(),
+                            content,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                prompt_tokens = parsed.prompt_tokens.or(prompt_tokens);
+                completion_tokens = parsed.completion_tokens.or(completion_tokens);
+                total_tokens = parsed.total_tokens.or(total_tokens);
+                tokens_per_second = parsed.tokens_per_second.or(tokens_per_second);
+                prompt_tokens_per_second =
+                    parsed.prompt_tokens_per_second.or(prompt_tokens_per_second);
+            }
+        }
+    }
+    if !buffer.is_empty() {
+        if let Some(parsed) = parse_sse_line(&buffer)? {
+            if let Some(content) = parsed.content {
                 app.emit(
                     "chat-token",
                     TokenEvent {
@@ -636,21 +725,34 @@ async fn stream_chat(
                 )
                 .map_err(|error| error.to_string())?;
             }
+            prompt_tokens = parsed.prompt_tokens.or(prompt_tokens);
+            completion_tokens = parsed.completion_tokens.or(completion_tokens);
+            total_tokens = parsed.total_tokens.or(total_tokens);
+            tokens_per_second = parsed.tokens_per_second.or(tokens_per_second);
+            prompt_tokens_per_second = parsed.prompt_tokens_per_second.or(prompt_tokens_per_second);
         }
     }
-    if !buffer.is_empty() {
-        if let Some(content) = parse_sse_line(&buffer)? {
-            app.emit(
-                "chat-token",
-                TokenEvent {
-                    request_id: request.request_id,
-                    content,
-                },
-            )
-            .map_err(|error| error.to_string())?;
-        }
+    let prompt_tokens = prompt_tokens.unwrap_or_default();
+    let completion_tokens = completion_tokens.unwrap_or_default();
+    if prompt_tokens == 0 && completion_tokens == 0 {
+        return Ok(None);
     }
-    Ok(())
+    let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    let tokens_per_second = tokens_per_second.unwrap_or_else(|| {
+        if elapsed_ms == 0 {
+            0.0
+        } else {
+            completion_tokens as f64 / (elapsed_ms as f64 / 1000.0)
+        }
+    });
+    Ok(Some(ChatMetrics {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: total_tokens.unwrap_or(prompt_tokens.saturating_add(completion_tokens)),
+        elapsed_ms,
+        tokens_per_second,
+        prompt_tokens_per_second,
+    }))
 }
 
 pub fn run() {
@@ -736,8 +838,21 @@ mod tests {
     #[test]
     fn parses_openai_stream_content() {
         let line = br#"data: {"choices":[{"delta":{"content":"hello"}}]}"#;
-        assert_eq!(parse_sse_line(line).unwrap(), Some("hello".into()));
+        let parsed = parse_sse_line(line).unwrap().unwrap();
+        assert_eq!(parsed.content.as_deref(), Some("hello"));
         assert_eq!(parse_sse_line(b"data: [DONE]").unwrap(), None);
         assert_eq!(parse_sse_line(b": keep-alive").unwrap(), None);
+    }
+
+    #[test]
+    fn parses_openai_stream_usage_and_timings() {
+        let line = br#"data: {"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150},"timings":{"prompt_per_second":48.5,"predicted_per_second":12.25}}"#;
+        let parsed = parse_sse_line(line).unwrap().unwrap();
+        assert!(parsed.content.is_none());
+        assert_eq!(parsed.prompt_tokens, Some(120));
+        assert_eq!(parsed.completion_tokens, Some(30));
+        assert_eq!(parsed.total_tokens, Some(150));
+        assert_eq!(parsed.tokens_per_second, Some(12.25));
+        assert_eq!(parsed.prompt_tokens_per_second, Some(48.5));
     }
 }

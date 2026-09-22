@@ -89,13 +89,6 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 Дополнительно выполнен реальный smoke-тест на Apple M3 Pro: официальный runtime `prism-b10709-9a9394a` загрузил Bonsai 1.7B Q1_0, прошёл health check и вернул потоковый ответ. Условия и границы проверки: [docs/smoke-test-2026-09-21.md](docs/smoke-test-2026-09-21.md).
 
-## Сборка подписанного DMG
-
-```bash
-npm run tauri -- build --bundles dmg
-```
-
-В `src-tauri/tauri.conf.json` закреплена подпись `Developer ID Application: Gennadiy Zakharov (BN3D9H4C7J)`. Публичный DMG подписан, нотариально заверен Apple и проверен Gatekeeper. На чужой машине значение нужно заменить либо убрать для неподписанной локальной сборки. Секреты нотариального сервиса не хранятся в репозитории.
 
 ## Архитектура и безопасность
 

@@ -35,7 +35,7 @@ This is a focused, transparent home for the Bonsai model family rather than a ge
 ## Capabilities and Constraints
 
 - Required core: hardware and storage diagnostics, model catalog, evidence-based recommendation, resumable verified downloads, install/remove, runtime lifecycle, health checks, streaming chat, local history, image input where supported, local document RAG, reasoning/context controls, and a local OpenAI-compatible endpoint.
-- Version 0.4.0 bundles a signed PrismML runtime and installs curated GGUF files from the in-app catalog; manual paths remain an advanced option.
+- Version 0.5.1 bundles a signed PrismML runtime and installs curated GGUF files from the in-app catalog; manual paths remain an advanced option.
 - The catalog exposes the binary 1-bit Bonsai 27B separately from ternary Bonsai 2 27B in both PTQ1_0 and PQ2_0 packings, so packaging names are not presented as model families.
 - Ternary Bonsai 2 requires the PrismML llama.cpp fork; stock llama.cpp is not assumed compatible.
 - Memory thresholds are hypotheses until measured on real Macs. The interface must distinguish a recommendation from a verified compatibility result.

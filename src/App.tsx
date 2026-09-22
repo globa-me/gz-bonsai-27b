@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { type Locale, translate } from "./i18n";
 import appIcon from "./assets/app-icon.png";
 import { MarkdownMessage } from "./MarkdownMessage";
-import { createChat, loadChats, renameChatSession, saveChats, type Attachment, type ChatMessage, type ChatSession, type SearchSource } from "./chatStore";
+import { createChat, loadChats, normalizeChatTitle, renameChatSession, restoreAutoChatTitle, saveChats, type Attachment, type ChatMessage, type ChatSession, type SearchSource } from "./chatStore";
 import { summarizeMetrics, type MessageMetrics } from "./chatMetrics";
 import { buildRagContext, type RagDocument, type RagSearchHit } from "./rag";
 import { resolveRuntimePath } from "./runtimeSelection";
 import { inferSearchFreshness, resolveSearchCountry, searchErrorCode } from "./webSearch";
+import { classifyDroppedPaths } from "./fileDrop";
 
 type ServerPhase = "stopped" | "starting" | "ready" | "stopping" | "error";
 type View = "chat" | "models" | "diagnostics" | "about";
@@ -159,6 +161,7 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [ragDocuments, setRagDocuments] = useState<RagDocument[]>([]);
   const [ragBusy, setRagBusy] = useState(false);
   const [ragError, setRagError] = useState<string | null>(null);
@@ -232,7 +235,7 @@ export default function App() {
   useEffect(() => {
     void loadChats()
       .then((stored) => {
-        const initial = stored.length ? stored : [createChat(translate(locale, "untitledChat"))];
+        const initial = stored.length ? stored.map(restoreAutoChatTitle) : [createChat(translate(locale, "untitledChat"))];
         setChats(initial);
         setActiveChatId(initial[0].id);
         recordDiagnostic("storage", "info", "chat_history_loaded", `chats=${initial.length}`);
@@ -269,7 +272,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauri) {
-      setSystemInfo({ appVersion: "0.5.0", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
+      setSystemInfo({ appVersion: "0.5.1", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
       setCatalog(previewCatalog);
       setRuntimePath(previewCatalog.runtimePath ?? "");
       return;
@@ -323,6 +326,32 @@ export default function App() {
       void unlistenProgress.then((fn) => fn());
     };
   }, []);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getCurrentWebview().onDragDropEvent(({ payload }) => {
+      if (payload.type === "enter" || payload.type === "over") {
+        setIsDraggingFiles(view === "chat" && !activeRequest && !ragBusy);
+        return;
+      }
+      setIsDraggingFiles(false);
+      if (payload.type !== "drop") return;
+      if (view !== "chat" || activeRequest || ragBusy) {
+        setAttachmentError(t("dropUnavailable"));
+        return;
+      }
+      void handleDroppedPaths(payload.paths);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(() => recordDiagnostic("frontend", "error", "file_drop_listener_failed"));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [view, activeRequest, ragBusy, activeChatId, activeRagDocumentKey, pendingAttachments.length, status.phase, locale]);
 
   async function copyDiagnosticReport() {
     const events = isTauri
@@ -521,6 +550,30 @@ export default function App() {
     setView("chat");
   }
 
+  async function addAttachmentsFromPaths(paths: string[]) {
+    setAttachmentError(null);
+    const available = Math.max(0, 6 - pendingAttachments.length);
+    if (!available) {
+      setAttachmentError(t("attachmentLimit"));
+      return;
+    }
+    const attachments: Attachment[] = [];
+    let importError: string | null = paths.length > available ? t("attachmentLimit") : null;
+    for (const path of paths.slice(0, available)) {
+      try {
+        const payload = await invoke<AttachmentPayload>("read_attachment", { request: { path } });
+        attachments.push({ ...payload, id: crypto.randomUUID() });
+      } catch (error) {
+        importError = String(error);
+      }
+    }
+    if (attachments.length) {
+      setPendingAttachments((current) => [...current, ...attachments].slice(0, 6));
+      recordDiagnostic("frontend", "info", "prompt_attachments_added", `count=${attachments.length}`);
+    }
+    if (importError) setAttachmentError(importError);
+  }
+
   async function chooseAttachments() {
     setAttachmentError(null);
     const selected = await open({
@@ -532,37 +585,23 @@ export default function App() {
       ],
     });
     if (!selected) return;
-    try {
-      const paths = Array.isArray(selected) ? selected : [selected];
-      const payloads = await Promise.all(paths.map((path) => invoke<AttachmentPayload>("read_attachment", { request: { path } })));
-      const attachments = payloads.map((payload) => ({ ...payload, id: crypto.randomUUID() }));
-      setPendingAttachments((current) => [...current, ...attachments].slice(0, 6));
-    } catch (error) {
-      setAttachmentError(String(error));
-    }
+    await addAttachmentsFromPaths(Array.isArray(selected) ? selected : [selected]);
   }
 
-  async function chooseRagDocuments() {
+  async function importRagDocuments(paths: string[]) {
     if (!activeChat || ragBusy) return;
     setRagError(null);
-    const selected = await open({
-      multiple: true,
-      directory: false,
-      title: t("addRagDocuments"),
-      filters: [{ name: t("ragSupportedFiles"), extensions: ["pdf", "docx", "txt", "md", "markdown", "csv", "json"] }],
-    });
-    if (!selected) return;
-    const paths = (Array.isArray(selected) ? selected : [selected])
+    const selectedPaths = paths
       .slice(0, Math.max(0, 12 - (activeChat.ragDocumentIds?.length ?? 0)));
-    if (!paths.length) {
+    if (!selectedPaths.length) {
       setRagError(t("ragDocumentLimit"));
       return;
     }
     setRagBusy(true);
-    recordDiagnostic("rag", "info", "document_import_started", `count=${paths.length}`);
+    recordDiagnostic("rag", "info", "document_import_started", `count=${selectedPaths.length}`);
     const imported: RagDocument[] = [];
     let importError: string | null = null;
-    for (const path of paths) {
+    for (const path of selectedPaths) {
       try {
         imported.push(await invoke<RagDocument>("import_rag_document", { request: { path } }));
       } catch (error) {
@@ -580,6 +619,31 @@ export default function App() {
     }
     if (importError) setRagError(importError);
     setRagBusy(false);
+  }
+
+  async function chooseRagDocuments() {
+    const selected = await open({
+      multiple: true,
+      directory: false,
+      title: t("addRagDocuments"),
+      filters: [{ name: t("ragSupportedFiles"), extensions: ["pdf", "docx", "txt", "md", "markdown", "csv", "json"] }],
+    });
+    if (!selected) return;
+    await importRagDocuments(Array.isArray(selected) ? selected : [selected]);
+  }
+
+  async function handleDroppedPaths(paths: string[]) {
+    if (!paths.length) return;
+    const { ragPaths, attachmentPaths } = classifyDroppedPaths(paths);
+    recordDiagnostic("frontend", "info", "files_dropped", `count=${paths.length}`);
+    if (ragPaths.length) await importRagDocuments(ragPaths);
+    if (attachmentPaths.length) {
+      if (status.phase !== "ready") {
+        setAttachmentError(t("dropStartModel"));
+        return;
+      }
+      await addAttachmentsFromPaths(attachmentPaths);
+    }
   }
 
   function detachRagDocument(documentId: string) {
@@ -716,7 +780,7 @@ export default function App() {
       history.push({ role: "user", content: ragContext.prompt });
     }
     const nextTitle = activeChat.messages.length === 0 && content
-      ? content.replace(/\s+/g, " ").slice(0, 42)
+      ? normalizeChatTitle(content)
       : undefined;
     updateChatMessages(chatId, (current) => [...current, userMessage, assistantMessage], nextTitle);
     setDraft("");
@@ -783,7 +847,7 @@ export default function App() {
               <button type="button" aria-label={t("cancel")} onClick={() => { setEditingChatId(null); setEditingChatTitle(""); }}>×</button>
             </form>
             : <div className="chat-history-row" key={chat.id}>
-              <button className={view === "chat" && activeChatId === chat.id ? "active" : ""} onClick={() => { setActiveChatId(chat.id); setView("chat"); }}>{chat.title}</button>
+              <button className={view === "chat" && activeChatId === chat.id ? "active" : ""} title={chat.title} onClick={() => { setActiveChatId(chat.id); setView("chat"); }}>{chat.title}</button>
               <div className="chat-actions">
                 <button aria-label={`${t("renameChat")}: ${chat.title}`} title={t("renameChat")} onClick={() => startRenamingChat(chat)}>✎</button>
                 <button aria-label={`${t("deleteChat")}: ${chat.title}`} title={t("deleteChat")} onClick={() => deleteChat(chat)} disabled={Boolean(activeRequest && activeChatId === chat.id)}>×</button>
@@ -796,13 +860,14 @@ export default function App() {
           <ExternalLink href="https://zakharov.asia/ru/">{t("developedBy")} <ExternalIcon /></ExternalLink>
         </div>
       </aside>
-      <section className="main-pane">
+      <section className={`main-pane ${isDraggingFiles ? "drop-active" : ""}`}>
+        {isDraggingFiles && <div className="drop-overlay" role="status" aria-live="polite"><FileIcon /><strong>{t("dropFiles")}</strong><span>{t("dropFilesHint")}</span></div>}
         {view === "chat" && <>
           <header className="pane-bar"><button className="model-picker" onClick={() => setView("models")}><Logo small /><span><small>{t("localModel")}</small>{status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))}</span><ChevronIcon /></button>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer}>{t("stopModel")}</button>}</div></details></header>
           <div className={`conversation ${messages.length === 0 ? "is-empty" : ""}`}>
             {messages.length === 0 ? <div className="welcome"><Logo /><h1>{status.phase === "ready" ? t("chatWelcome") : t("chooseModelFirst")}</h1>{status.phase !== "ready" && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => {
               const sources = ephemeralSources[message.id] ?? message.sources;
-              return <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? <MarkdownMessage>{message.content || (activeRequest === message.id ? t("generating") : "")}</MarkdownMessage> : <div className="plain-message">{message.content}</div>}{sources?.length ? <div className="sources"><small>{t("sources")}</small>{sources.map((source, index) => <ExternalLink href={source.url} key={`${message.id}-${index}-${source.url}`}>{index + 1}. {source.title}{source.age ? ` · ${source.age}` : ""}</ExternalLink>)}<em>{t("sourcesSessionOnly")}</em></div> : null}{message.documentSources?.length ? <div className="document-sources"><small>{t("documentSources")}</small>{message.documentSources.map((source) => <span key={`${source.documentId}-${source.chunkId}`} title={source.excerpt}>[{source.label}] {source.documentName} · {t("fragment")} {source.ordinal}</span>)}</div> : null}{message.role === "assistant" && message.metrics && <div className="message-metrics" title={`${t("promptTokens")}: ${formatCount(message.metrics.promptTokens, locale)} · ${t("totalTokens")}: ${formatCount(message.metrics.totalTokens, locale)}`}>{formatCount(message.metrics.completionTokens, locale)} {t("outputTokensUnit")} · {formatSpeed(message.metrics.tokensPerSecond, locale)} {t("tokensPerSecond")} · {formatDuration(message.metrics.elapsedMs, locale)}</div>}</div></article>;
+              return <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? message.content ? <MarkdownMessage>{message.content}</MarkdownMessage> : activeRequest === message.id ? <GeneratingIndicator label={t("generating")} /> : null : <div className="plain-message">{message.content}</div>}{sources?.length ? <div className="sources"><small>{t("sources")}</small>{sources.map((source, index) => <ExternalLink href={source.url} key={`${message.id}-${index}-${source.url}`}>{index + 1}. {source.title}{source.age ? ` · ${source.age}` : ""}</ExternalLink>)}<em>{t("sourcesSessionOnly")}</em></div> : null}{message.documentSources?.length ? <div className="document-sources"><small>{t("documentSources")}</small>{message.documentSources.map((source) => <span key={`${source.documentId}-${source.chunkId}`} title={source.excerpt}>[{source.label}] {source.documentName} · {t("fragment")} {source.ordinal}</span>)}</div> : null}{message.role === "assistant" && message.metrics && <div className="message-metrics" title={`${t("promptTokens")}: ${formatCount(message.metrics.promptTokens, locale)} · ${t("totalTokens")}: ${formatCount(message.metrics.totalTokens, locale)}`}>{formatCount(message.metrics.completionTokens, locale)} {t("outputTokensUnit")} · {formatSpeed(message.metrics.tokensPerSecond, locale)} {t("tokensPerSecond")} · {formatDuration(message.metrics.elapsedMs, locale)}</div>}</div></article>;
             })}
           </div>
           <div className="composer-wrap">{ragDocuments.length ? <details className="rag-documents"><summary>{t("ragReady").replace("{count}", String(ragDocuments.length))}</summary><div>{ragDocuments.map((document) => <span key={document.id}><span><strong>{document.name}</strong><small>{document.chunkCount} {t("fragments")}</small></span><button onClick={() => detachRagDocument(document.id)} aria-label={`${t("detachRagDocument")}: ${document.name}`}>×</button></span>)}</div></details> : null}{pendingAttachments.length ? <div className="pending-attachments">{pendingAttachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? <img src={attachment.content} alt="" /> : <FileIcon />}<span>{attachment.name}</span><button onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))} aria-label={t("removeAttachment")}>×</button></span>)}</div> : null}{(attachmentError || ragError || searchError) && <div className="composer-error">{searchError || attachmentError || ragError}</div>}<div className="composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={t("placeholder")} disabled={status.phase !== "ready" || Boolean(activeRequest)} rows={2} /><div className="composer-actions"><button className="tool-button" onClick={chooseAttachments} disabled={status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /></button><button className="tool-button rag-button" onClick={chooseRagDocuments} disabled={Boolean(activeRequest) || ragBusy || (activeChat?.ragDocumentIds?.length ?? 0) >= 12} aria-label={t("addRagDocuments")} title={t("addRagDocuments")}><KnowledgeIcon /></button><button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={toggleWebSearch} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} aria-label={t("webSearch")} title={t("webSearch")}><GlobeIcon /></button><button className="send-button" onClick={sendMessage} disabled={(!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching || ragBusy} aria-label={t("send")}><SendIcon /></button></div></div>{ragBusy && <div className="rag-disclosure">{t("ragIndexing")}</div>}{webSearchEnabled && <div className="search-disclosure">{searching ? t("searchingWeb").replace("{provider}", searchProviderName) : t("webSearchDisclosure").replace("{provider}", searchProviderName)}</div>}</div>
@@ -852,6 +917,10 @@ export default function App() {
 
 function FileField({ label, value, empty, choose, onChoose }: { label: string; value: string; empty: string; choose: string; onChoose: () => void }) {
   return <div className="file-field"><label>{label}</label><button onClick={onChoose}><span className={value ? "" : "placeholder"}>{value ? fileName(value) : empty}</span><strong>{choose}</strong></button></div>;
+}
+
+function GeneratingIndicator({ label }: { label: string }) {
+  return <div className="generating-indicator" role="status" aria-live="polite"><span>{label}</span><span className="generating-dots" aria-hidden="true"><i /><i /><i /></span></div>;
 }
 
 function Logo({ small = false }: { small?: boolean }) { return <img className={`logo ${small ? "small" : ""}`} src={appIcon} alt="" aria-hidden="true" />; }

@@ -15,6 +15,7 @@ describe("buildRagContext", () => {
     const result = buildRagContext("Где данные?", hits, "ru");
     expect(result?.prompt).toContain("[D1] guide.pdf · fragment 2");
     expect(result?.prompt).toContain("Исходный вопрос: Где данные?");
+    expect(result?.prompt).toContain("Не упоминай это правило");
     expect(result?.sources.map((source) => source.label)).toEqual(["D1", "D2"]);
   });
 });

@@ -241,6 +241,7 @@ Authored icons are outline SVGs with rounded caps and joins, normally 16–20px.
 ### Navigation
 
 - **Style:** Full-width sidebar rows combine an 18px authored outline icon with a 13px label, 9px corners, and 9px by 10px padding.
+- **Recent chats:** Chat titles use the same readable 13px navigation role, including rename mode. Each title occupies one full-width row with ellipsis only at the actual sidebar edge; automatic titles retain up to 80 characters and expose the full title as a native tooltip. Hidden row actions do not permanently reserve text width.
 - **Default / Hover / Active:** Default is transparent; hover adds a translucent white wash; active uses a stronger white wash, darker text, and the Selected Lift shadow.
 - **Language Segments:** A compact bordered two-option control; only the selected language receives a white surface and small lift.
 
@@ -256,6 +257,8 @@ Authored icons are outline SVGs with rounded caps and joins, normally 16–20px.
 - **Shape:** 15px corners and a 68px minimum height (`components.composer`).
 - **Action:** The 34px forest send button uses the authored upward arrow; its disabled state becomes muted gray-green.
 - **Depth:** Use Composer Ambient only, backed by the existing fade from transparent to Main Paper.
+- **File drop:** Dragging files over the chat replaces the work area with a calm, high-contrast drop target. PDF/DOCX route to local RAG; images, text and code route to the pending request.
+- **Generation state:** Before the first token, show a compact three-dot Bonsai activity indicator beside explicit status text; respect Reduced Motion and remove the indicator as soon as streamed text appears.
 
 ### Cards / Containers
 

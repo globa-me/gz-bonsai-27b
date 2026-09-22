@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeChatTitle, renameChatSession, sanitizeChatsForStorage, type ChatSession } from "./chatStore";
+import { normalizeChatTitle, renameChatSession, restoreAutoChatTitle, sanitizeChatsForStorage, type ChatSession } from "./chatStore";
 
 const chat: ChatSession = {
   id: "chat-1",
@@ -25,6 +25,20 @@ describe("chat titles", () => {
 
   it("keeps the old title when the new title is empty", () => {
     expect(renameChatSession(chat, "   ")).toBe(chat);
+  });
+
+  it("restores a fuller automatic title from the first user message", () => {
+    const prompt = "Какой код проекта указан в PDF и сколько символов есть в приложенном документе?";
+    expect(restoreAutoChatTitle({
+      ...chat,
+      title: prompt.slice(0, 42),
+      messages: [{ id: "prompt-1", role: "user", content: prompt }],
+    }).title).toBe(prompt);
+  });
+
+  it("does not replace a title explicitly chosen by the user", () => {
+    const renamed = { ...chat, title: "Мой проект", titleSource: "user" as const, messages: [{ id: "prompt-1", role: "user" as const, content: "Очень длинный исходный запрос" }] };
+    expect(restoreAutoChatTitle(renamed)).toBe(renamed);
   });
 
   it("never persists web search result payloads", () => {

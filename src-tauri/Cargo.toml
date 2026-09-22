@@ -1,6 +1,6 @@
 [package]
 name = "bonsai-desktop"
-version = "0.5.0"
+version = "0.5.1"
 description = "A simple local home for Bonsai models"
 authors = ["Bonsai Desktop contributors"]
 edition = "2021"

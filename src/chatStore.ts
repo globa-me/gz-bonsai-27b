@@ -95,6 +95,13 @@ export function normalizeChatTitle(value: string): string {
   return value.trim().replace(/\s+/g, " ").slice(0, 80);
 }
 
+export function restoreAutoChatTitle(chat: ChatSession): ChatSession {
+  if (chat.titleSource === "user") return chat;
+  const firstPrompt = chat.messages.find((message) => message.role === "user")?.content;
+  const title = firstPrompt ? normalizeChatTitle(firstPrompt) : "";
+  return title && title !== chat.title ? { ...chat, title, titleSource: "auto" } : chat;
+}
+
 export function renameChatSession(chat: ChatSession, value: string): ChatSession {
   const title = normalizeChatTitle(value);
   return title ? { ...chat, title, titleSource: "user" } : chat;

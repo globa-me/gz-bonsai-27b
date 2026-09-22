@@ -11,7 +11,7 @@
 
 ## Скачать
 
-[Скачать GZ Bonsai 27B 0.4.0 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.4.0/GZ-Bonsai-27B-0.4.0-arm64.dmg) — подписанный и нотариально заверенный Apple DMG. Перетащите приложение в папку Applications.
+[Скачать GZ Bonsai 27B 0.4.0 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.4.0/GZ-Bonsai-27B-0.4.0-arm64.dmg) — подписанный DMG. Перетащите приложение в папку Applications и работайте на здоровье :-).
 
 Совместимый runtime уже находится внутри приложения. Откройте «Модели», скачайте выбранный вариант и запустите локальный чат.
 

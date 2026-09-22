@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 base64 = "0.22"
 futures-util = "0.3"
+pdf-extract = "0.12.1"
 quick-xml = { version = "0.38", features = ["serialize"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -25,3 +26,4 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tokio = { version = "1", features = ["fs", "process", "sync", "time", "io-util"] }
+zip = { version = "6.0.0", default-features = false, features = ["deflate"] }

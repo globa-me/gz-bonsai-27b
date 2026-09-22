@@ -8,6 +8,7 @@ import appIcon from "./assets/app-icon.png";
 import { MarkdownMessage } from "./MarkdownMessage";
 import { createChat, loadChats, renameChatSession, saveChats, type Attachment, type ChatMessage, type ChatSession, type SearchSource } from "./chatStore";
 import { summarizeMetrics, type MessageMetrics } from "./chatMetrics";
+import { buildRagContext, type RagDocument, type RagSearchHit } from "./rag";
 import { resolveRuntimePath } from "./runtimeSelection";
 
 type ServerPhase = "stopped" | "starting" | "ready" | "stopping" | "error";
@@ -143,6 +144,9 @@ export default function App() {
   const [draft, setDraft] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [ragDocuments, setRagDocuments] = useState<RagDocument[]>([]);
+  const [ragBusy, setRagBusy] = useState(false);
+  const [ragError, setRagError] = useState<string | null>(null);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [searching, setSearching] = useState(false);
   const [activeRequest, setActiveRequest] = useState<string | null>(null);
@@ -161,6 +165,7 @@ export default function App() {
     () => summarizeMetrics(messages.map((message) => message.role === "assistant" ? message.metrics : undefined)),
     [messages],
   );
+  const activeRagDocumentKey = (activeChat?.ragDocumentIds ?? []).join(",");
 
   async function refreshCatalog() {
     const next = await invoke<ManagedCatalog>("managed_catalog");
@@ -202,6 +207,23 @@ export default function App() {
   useEffect(() => {
     if (historyLoaded) void saveChats(chats);
   }, [chats, historyLoaded]);
+
+  useEffect(() => {
+    const documentIds = activeChat?.ragDocumentIds ?? [];
+    if (!isTauri || !documentIds.length) {
+      setRagDocuments([]);
+      return;
+    }
+    let cancelled = false;
+    void invoke<RagDocument[]>("list_rag_documents", { request: { documentIds } })
+      .then((documents) => {
+        if (!cancelled) setRagDocuments(documents);
+      })
+      .catch((error) => {
+        if (!cancelled) setRagError(String(error));
+      });
+    return () => { cancelled = true; };
+  }, [activeChatId, activeRagDocumentKey]);
 
   useEffect(() => {
     if (!isTauri) {
@@ -419,6 +441,51 @@ export default function App() {
     }
   }
 
+  async function chooseRagDocuments() {
+    if (!activeChat || ragBusy) return;
+    setRagError(null);
+    const selected = await open({
+      multiple: true,
+      directory: false,
+      title: t("addRagDocuments"),
+      filters: [{ name: t("ragSupportedFiles"), extensions: ["pdf", "docx", "txt", "md", "markdown", "csv", "json"] }],
+    });
+    if (!selected) return;
+    const paths = (Array.isArray(selected) ? selected : [selected])
+      .slice(0, Math.max(0, 12 - (activeChat.ragDocumentIds?.length ?? 0)));
+    if (!paths.length) {
+      setRagError(t("ragDocumentLimit"));
+      return;
+    }
+    setRagBusy(true);
+    const imported: RagDocument[] = [];
+    let importError: string | null = null;
+    for (const path of paths) {
+      try {
+        imported.push(await invoke<RagDocument>("import_rag_document", { request: { path } }));
+      } catch (error) {
+        importError = String(error);
+      }
+    }
+    if (imported.length) {
+      const importedIds = imported.map((document) => document.id);
+      setChats((current) => current.map((chat) => chat.id === activeChat.id
+        ? { ...chat, ragDocumentIds: [...new Set([...(chat.ragDocumentIds ?? []), ...importedIds])], updatedAt: Date.now() }
+        : chat));
+      setRagDocuments((current) => [...new Map([...current, ...imported].map((document) => [document.id, document])).values()]);
+    }
+    if (importError) setRagError(importError);
+    setRagBusy(false);
+  }
+
+  function detachRagDocument(documentId: string) {
+    if (!activeChat) return;
+    setChats((current) => current.map((chat) => chat.id === activeChat.id
+      ? { ...chat, ragDocumentIds: (chat.ragDocumentIds ?? []).filter((id) => id !== documentId), updatedAt: Date.now() }
+      : chat));
+    setRagDocuments((current) => current.filter((document) => document.id !== documentId));
+  }
+
   function updateChatMessages(chatId: string, update: (messages: ChatMessage[]) => ChatMessage[], title?: string) {
     setChats((current) => current.map((chat) => chat.id === chatId
       ? {
@@ -483,6 +550,7 @@ export default function App() {
     }
     const requestId = crypto.randomUUID();
     const chatId = activeChat.id;
+    setActiveRequest(requestId);
     const sources = webSearchEnabled && content
       ? await (async () => {
         setSearching(true);
@@ -496,8 +564,30 @@ export default function App() {
         }
       })()
       : [];
+    const ragContext = content && activeChat.ragDocumentIds?.length
+      ? await (async () => {
+        setRagBusy(true);
+        setRagError(null);
+        try {
+          const hits = await invoke<RagSearchHit[]>("search_rag_documents", {
+            request: {
+              query: content,
+              documentIds: activeChat.ragDocumentIds,
+              limit: 5,
+              maxCharacters: Math.min(9_000, Math.max(3_000, contextSize)),
+            },
+          });
+          return buildRagContext(content, hits, locale);
+        } catch (error) {
+          setRagError(String(error));
+          return null;
+        } finally {
+          setRagBusy(false);
+        }
+      })()
+      : null;
     const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content, attachments: pendingAttachments };
-    const assistantMessage: ChatMessage = { id: requestId, role: "assistant", content: "" };
+    const assistantMessage: ChatMessage = { id: requestId, role: "assistant", content: "", documentSources: ragContext?.sources };
     const history: Array<{ role: string; content: unknown }> = [...activeChat.messages, userMessage]
       .map((message) => ({ role: message.role, content: apiContent(message) }));
     if (sources.length) {
@@ -507,6 +597,9 @@ export default function App() {
       });
       assistantMessage.sources = sources;
     }
+    if (ragContext) {
+      history.push({ role: "user", content: ragContext.prompt });
+    }
     const nextTitle = activeChat.messages.length === 0 && content
       ? content.replace(/\s+/g, " ").slice(0, 42)
       : undefined;
@@ -514,7 +607,6 @@ export default function App() {
     setDraft("");
     setPendingAttachments([]);
     setAttachmentError(null);
-    setActiveRequest(requestId);
     try {
       const metrics = await invoke<MessageMetrics | null>("stream_chat", { request: { requestId, port, messages: history } });
       if (metrics) {
@@ -590,9 +682,9 @@ export default function App() {
         {view === "chat" && <>
           <header className="pane-bar"><button className="model-picker" onClick={() => setView("models")}><Logo small /><span><small>{t("localModel")}</small>{status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))}</span><ChevronIcon /></button>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer}>{t("stopModel")}</button>}</div></details></header>
           <div className={`conversation ${messages.length === 0 ? "is-empty" : ""}`}>
-            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{status.phase === "ready" ? t("chatWelcome") : t("chooseModelFirst")}</h1>{status.phase !== "ready" && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? <MarkdownMessage>{message.content || (activeRequest === message.id ? t("generating") : "")}</MarkdownMessage> : <div className="plain-message">{message.content}</div>}{message.sources?.length ? <div className="sources"><small>{t("sources")}</small>{message.sources.map((source, index) => <ExternalLink href={source.url} key={source.url}>{index + 1}. {source.title}</ExternalLink>)}</div> : null}{message.role === "assistant" && message.metrics && <div className="message-metrics" title={`${t("promptTokens")}: ${formatCount(message.metrics.promptTokens, locale)} · ${t("totalTokens")}: ${formatCount(message.metrics.totalTokens, locale)}`}>{formatCount(message.metrics.completionTokens, locale)} {t("outputTokensUnit")} · {formatSpeed(message.metrics.tokensPerSecond, locale)} {t("tokensPerSecond")} · {formatDuration(message.metrics.elapsedMs, locale)}</div>}</div></article>)}
+            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{status.phase === "ready" ? t("chatWelcome") : t("chooseModelFirst")}</h1>{status.phase !== "ready" && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? <MarkdownMessage>{message.content || (activeRequest === message.id ? t("generating") : "")}</MarkdownMessage> : <div className="plain-message">{message.content}</div>}{message.sources?.length ? <div className="sources"><small>{t("sources")}</small>{message.sources.map((source, index) => <ExternalLink href={source.url} key={source.url}>{index + 1}. {source.title}</ExternalLink>)}</div> : null}{message.documentSources?.length ? <div className="document-sources"><small>{t("documentSources")}</small>{message.documentSources.map((source) => <span key={`${source.documentId}-${source.chunkId}`} title={source.excerpt}>[{source.label}] {source.documentName} · {t("fragment")} {source.ordinal}</span>)}</div> : null}{message.role === "assistant" && message.metrics && <div className="message-metrics" title={`${t("promptTokens")}: ${formatCount(message.metrics.promptTokens, locale)} · ${t("totalTokens")}: ${formatCount(message.metrics.totalTokens, locale)}`}>{formatCount(message.metrics.completionTokens, locale)} {t("outputTokensUnit")} · {formatSpeed(message.metrics.tokensPerSecond, locale)} {t("tokensPerSecond")} · {formatDuration(message.metrics.elapsedMs, locale)}</div>}</div></article>)}
           </div>
-          <div className="composer-wrap">{pendingAttachments.length ? <div className="pending-attachments">{pendingAttachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? <img src={attachment.content} alt="" /> : <FileIcon />}<span>{attachment.name}</span><button onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))} aria-label={t("removeAttachment")}>×</button></span>)}</div> : null}{attachmentError && <div className="composer-error">{attachmentError}</div>}<div className="composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={t("placeholder")} disabled={status.phase !== "ready" || Boolean(activeRequest)} rows={2} /><div className="composer-actions"><button className="tool-button" onClick={chooseAttachments} disabled={status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /></button><button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={() => setWebSearchEnabled((value) => !value)} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} title={t("webSearchDisclosure")}><GlobeIcon /></button><button className="send-button" onClick={sendMessage} disabled={(!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching} aria-label={t("send")}><SendIcon /></button></div></div>{webSearchEnabled && <div className="search-disclosure">{searching ? t("searchingWeb") : t("webSearchDisclosure")}</div>}</div>
+          <div className="composer-wrap">{ragDocuments.length ? <details className="rag-documents"><summary>{t("ragReady").replace("{count}", String(ragDocuments.length))}</summary><div>{ragDocuments.map((document) => <span key={document.id}><span><strong>{document.name}</strong><small>{document.chunkCount} {t("fragments")}</small></span><button onClick={() => detachRagDocument(document.id)} aria-label={`${t("detachRagDocument")}: ${document.name}`}>×</button></span>)}</div></details> : null}{pendingAttachments.length ? <div className="pending-attachments">{pendingAttachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? <img src={attachment.content} alt="" /> : <FileIcon />}<span>{attachment.name}</span><button onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))} aria-label={t("removeAttachment")}>×</button></span>)}</div> : null}{(attachmentError || ragError) && <div className="composer-error">{attachmentError || ragError}</div>}<div className="composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={t("placeholder")} disabled={status.phase !== "ready" || Boolean(activeRequest)} rows={2} /><div className="composer-actions"><button className="tool-button" onClick={chooseAttachments} disabled={status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /></button><button className="tool-button rag-button" onClick={chooseRagDocuments} disabled={Boolean(activeRequest) || ragBusy || (activeChat?.ragDocumentIds?.length ?? 0) >= 12} aria-label={t("addRagDocuments")} title={t("addRagDocuments")}><KnowledgeIcon /></button><button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={() => setWebSearchEnabled((value) => !value)} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} title={t("webSearchDisclosure")}><GlobeIcon /></button><button className="send-button" onClick={sendMessage} disabled={(!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching || ragBusy} aria-label={t("send")}><SendIcon /></button></div></div>{ragBusy && <div className="rag-disclosure">{t("ragIndexing")}</div>}{webSearchEnabled && <div className="search-disclosure">{searching ? t("searchingWeb") : t("webSearchDisclosure")}</div>}</div>
         </>}
         {view === "models" && <div className="content-page">
           <header className="page-heading"><div><h1>{t("modelsTitle")}</h1><p>{t("modelsDescription")}</p></div><div className={`status ${status.phase}`}><i /><span>{phaseLabel}</span></div></header>
@@ -634,6 +726,7 @@ function SendIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d
 function PlusIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>; }
 function GlobeIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6" /><path d="M4 10h12M10 4c2 2 2 10 0 12M10 4c-2 2-2 10 0 12" /></svg>; }
 function FileIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 3h5l3 3v11H6zM11 3v4h4" /></svg>; }
+function KnowledgeIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5.5c2.3-.9 4.3-.5 6 1.1v9c-1.7-1.6-3.7-2-6-1.1zM16 5.5c-2.3-.9-4.3-.5-6 1.1v9c1.7-1.6 3.7-2 6-1.1z" /></svg>; }
 function ChevronIcon() { return <svg className="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6.5 3 3 3-3" /></svg>; }
 function ExternalIcon() { return <svg className="external" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h6v6M12 4 4 12" /></svg>; }
 function NavButton({ icon, label, active, onClick }: { icon: string; label: string; active: boolean; onClick: () => void }) { return <button className={active ? "active" : ""} onClick={onClick}><svg viewBox="0 0 20 20" aria-hidden="true">{icon === "chat" && <path d="M4 4.5h12v8H9l-4 3v-3H4z" />}{icon === "models" && <><path d="M4 5.5h12v9H4z" /><path d="M7 3.5v2m6-2v2M7 9h6m-6 3h4" /></>}{icon === "debug" && <><circle cx="10" cy="10" r="6" /><path d="M10 6.8v3.7m0 2.6v.1" /></>}{icon === "info" && <><circle cx="10" cy="10" r="6" /><path d="M10 9v4m0-6v.1" /></>}</svg><span>{label}</span></button>; }

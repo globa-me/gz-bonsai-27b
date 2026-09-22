@@ -6,6 +6,7 @@
 React UI
   ├─ IndexedDB chat history
   ├─ safe Markdown + attachments
+  ├─ chat-linked RAG document ids + citation snapshots
   │ Tauri invoke + events
 Rust application core
   ├─ system diagnostics
@@ -13,6 +14,7 @@ Rust application core
   ├─ lifecycle state machine
   ├─ health polling
   ├─ bounded attachment reader
+  ├─ local document extraction + BM25 retrieval
   ├─ opt-in Bing RSS search
   └─ SSE client + process RSS telemetry
        │ localhost only
@@ -43,6 +45,8 @@ Inference выполняет PrismML llama.cpp с Metal offload (`-ngl 99`). Э�
 - пауза сохраняет `.part`, отмена удаляет его, повторная установка продолжает загрузку;
 - UI не передаёт произвольный путь в команду рекурсивного удаления — Rust принимает только известный model id.
 - текстовые вложения ограничены 2 МБ, изображения — 12 МБ; допустимые форматы заданы allowlist;
+- RAG-документы ограничены 20 МБ, извлечённый текст — 4 млн символов; индекс хранится без исходного пути в Application Support;
+- RAG-контекст не записывается как сообщение и ограничен 3–12 тыс. символов; в историю попадают только id документов и снимки цитат;
 - веб-поиск вызывается только после явного включения в UI, имеет fixed HTTPS endpoint, timeout, лимит ответа и помечает результаты как недоверенные данные;
 - история чатов остаётся в локальном WebView IndexedDB и не входит в диагностический отчёт;
 - пользовательское название чата помечается как ручное и больше не заменяется первым сообщением; удаление изменяет только локальную историю;
@@ -56,12 +60,14 @@ Inference выполняет PrismML llama.cpp с Metal offload (`-ngl 99`). Э�
 2. На основании измерений откалибровать рекомендации и контекст.
 3. Проверить vision и изображения на всех трёх 27B-вариантах с реальными файлами projector.
 4. Добавить экспорт истории и расширяемый MCP слой.
+5. Проверить и закрепить отдельную multilingual embedding-модель для hybrid semantic + lexical RAG.
 
 ## Открытые вопросы
 
 - реальные пики памяти и скорость на доступных Mac;
 - App Sandbox, если он будет включён в будущем;
 - tool calling и будущий MCP слой в закреплённом runtime;
+- качество semantic retrieval и дополнительная память отдельного embedding-server; текущий BM25 хорошо находит точные термины, но не обещает семантическое совпадение перефразировок;
 - восстановление активной карточки загрузки после аварийного завершения UI — `.part` уже сохраняется, но состояние скорости не персистится.
 
 Актуальные внешние версии и контрольные суммы находятся в `docs/verified-artifacts.md`.

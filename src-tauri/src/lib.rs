@@ -1,5 +1,6 @@
 use futures_util::StreamExt;
 mod installer;
+mod rag;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -776,6 +777,9 @@ pub fn run() {
             stream_chat,
             read_attachment,
             web_search,
+            rag::import_rag_document,
+            rag::list_rag_documents,
+            rag::search_rag_documents,
             installer::managed_catalog,
             installer::install_runtime,
             installer::install_model,

@@ -1,4 +1,5 @@
 import type { MessageMetrics } from "./chatMetrics";
+import type { DocumentSource } from "./rag";
 
 export interface Attachment {
   id: string;
@@ -21,6 +22,7 @@ export interface ChatMessage {
   content: string;
   attachments?: Attachment[];
   sources?: SearchSource[];
+  documentSources?: DocumentSource[];
   metrics?: MessageMetrics;
 }
 
@@ -31,6 +33,7 @@ export interface ChatSession {
   updatedAt: number;
   messages: ChatMessage[];
   titleSource?: "auto" | "user";
+  ragDocumentIds?: string[];
 }
 
 const databaseName = "gz-bonsai-27b";
@@ -76,7 +79,7 @@ export async function saveChats(chats: ChatSession[]): Promise<void> {
 
 export function createChat(title: string): ChatSession {
   const now = Date.now();
-  return { id: crypto.randomUUID(), title, createdAt: now, updatedAt: now, messages: [], titleSource: "auto" };
+  return { id: crypto.randomUUID(), title, createdAt: now, updatedAt: now, messages: [], titleSource: "auto", ragDocumentIds: [] };
 }
 
 export function normalizeChatTitle(value: string): string {

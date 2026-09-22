@@ -10,6 +10,7 @@ import { createChat, loadChats, renameChatSession, saveChats, type Attachment, t
 import { summarizeMetrics, type MessageMetrics } from "./chatMetrics";
 import { buildRagContext, type RagDocument, type RagSearchHit } from "./rag";
 import { resolveRuntimePath } from "./runtimeSelection";
+import { inferSearchFreshness, resolveSearchCountry, searchErrorCode } from "./webSearch";
 
 type ServerPhase = "stopped" | "starting" | "ready" | "stopping" | "error";
 type View = "chat" | "models" | "diagnostics" | "about";
@@ -77,6 +78,20 @@ interface AttachmentPayload {
 }
 
 type WebSearchResult = SearchSource;
+
+interface SearchProviderStatus {
+  provider: "brave" | "tavily";
+  braveConfigured: boolean;
+  keylessAvailable: boolean;
+}
+
+interface DiagnosticEvent {
+  timestampMs: number;
+  layer: "frontend" | "chat" | "search" | "rag" | "installer" | "runtime" | "storage";
+  level: "debug" | "info" | "warn" | "error";
+  event: string;
+  detail?: string | null;
+}
 
 const storageKey = "bonsai-desktop-settings-v1";
 const isTauri = "__TAURI_INTERNALS__" in window;
@@ -149,6 +164,13 @@ export default function App() {
   const [ragError, setRagError] = useState<string | null>(null);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [searchStatus, setSearchStatus] = useState<SearchProviderStatus>({ provider: "tavily", braveConfigured: false, keylessAvailable: true });
+  const [searchApiKey, setSearchApiKey] = useState("");
+  const [searchSettingsBusy, setSearchSettingsBusy] = useState(false);
+  const [searchSettingsMessage, setSearchSettingsMessage] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [ephemeralSources, setEphemeralSources] = useState<Record<string, SearchSource[]>>({});
+  const [diagnosticEvents, setDiagnosticEvents] = useState<DiagnosticEvent[]>([]);
   const [activeRequest, setActiveRequest] = useState<string | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [reportCopied, setReportCopied] = useState(false);
@@ -166,6 +188,24 @@ export default function App() {
     [messages],
   );
   const activeRagDocumentKey = (activeChat?.ragDocumentIds ?? []).join(",");
+  const searchProviderName = searchStatus.provider === "brave" ? "Brave" : "Tavily Keyless";
+
+  function recordDiagnostic(layer: DiagnosticEvent["layer"], level: DiagnosticEvent["level"], event: string, detail?: string) {
+    if (!isTauri) {
+      setDiagnosticEvents((current) => [...current.slice(-199), { timestampMs: Date.now(), layer, level, event, detail }]);
+      return;
+    }
+    void invoke("record_diagnostic", { request: { layer, level, event, detail: detail ?? null } }).catch(() => undefined);
+  }
+
+  function localizedSearchError(error: unknown) {
+    const code = searchErrorCode(error);
+    if (code === "SEARCH_NOT_CONFIGURED" || code === "SEARCH_AUTH") return t("searchKeyRequired");
+    if (code === "SEARCH_QUOTA") return t("searchQuotaError");
+    if (code === "SEARCH_TIMEOUT") return t("searchTimeoutError");
+    if (code === "SEARCH_NO_RESULTS") return t("searchNoResultsError");
+    return t("searchUnavailableError");
+  }
 
   async function refreshCatalog() {
     const next = await invoke<ManagedCatalog>("managed_catalog");
@@ -195,17 +235,19 @@ export default function App() {
         const initial = stored.length ? stored : [createChat(translate(locale, "untitledChat"))];
         setChats(initial);
         setActiveChatId(initial[0].id);
+        recordDiagnostic("storage", "info", "chat_history_loaded", `chats=${initial.length}`);
       })
       .catch(() => {
         const initial = createChat(translate(locale, "untitledChat"));
         setChats([initial]);
         setActiveChatId(initial.id);
+        recordDiagnostic("storage", "error", "chat_history_load_failed");
       })
       .finally(() => setHistoryLoaded(true));
   }, []);
 
   useEffect(() => {
-    if (historyLoaded) void saveChats(chats);
+    if (historyLoaded) void saveChats(chats).catch(() => recordDiagnostic("storage", "error", "chat_history_save_failed"));
   }, [chats, historyLoaded]);
 
   useEffect(() => {
@@ -227,7 +269,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauri) {
-      setSystemInfo({ appVersion: "0.4.0", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
+      setSystemInfo({ appVersion: "0.5.0", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
       setCatalog(previewCatalog);
       setRuntimePath(previewCatalog.runtimePath ?? "");
       return;
@@ -247,13 +289,20 @@ export default function App() {
       })),
       );
     });
+    const unlistenDiagnostic = listen<DiagnosticEvent>("diagnostic-event", ({ payload }) => {
+      setDiagnosticEvents((current) => [...current.slice(-499), payload]);
+    });
+    void invoke("record_diagnostic", { request: { layer: "frontend", level: "info", event: "app_initialized", detail: null } }).catch(() => undefined);
     invoke<ServerStatus>("server_status").then(setStatus).catch(() => undefined);
     invoke<SystemInfo>("system_info").then(setSystemInfo).catch(() => undefined);
+    invoke<SearchProviderStatus>("search_provider_status").then(setSearchStatus).catch(() => undefined);
+    invoke<DiagnosticEvent[]>("diagnostic_snapshot").then(setDiagnosticEvents).catch(() => undefined);
     void refreshCatalog().catch((error) => setInstallError(String(error)));
     return () => {
       void unlistenLog.then((fn) => fn());
       void unlistenStatus.then((fn) => fn());
       void unlistenToken.then((fn) => fn());
+      void unlistenDiagnostic.then((fn) => fn());
     };
   }, []);
 
@@ -276,6 +325,9 @@ export default function App() {
   }, []);
 
   async function copyDiagnosticReport() {
+    const events = isTauri
+      ? await invoke<DiagnosticEvent[]>("diagnostic_snapshot").catch(() => diagnosticEvents)
+      : diagnosticEvents;
     const safeReport = [
       "GZ Bonsai 27B diagnostic report",
       `App: ${systemInfo?.appVersion ?? "unknown"}`,
@@ -289,12 +341,54 @@ export default function App() {
       `Runtime file: ${runtimePath ? fileName(runtimePath) : "not selected"}`,
       `Model file: ${modelPath ? fileName(modelPath) : "not selected"}`,
       `Projector file: ${projectorPath ? fileName(projectorPath) : "not selected"}`,
+      `Web search: ${searchProviderName} · Brave key ${searchStatus.braveConfigured ? "configured" : "not configured"}`,
+      "Recent application events:",
+      ...events.slice(-120).map((event) => `${new Date(event.timestampMs).toISOString()} [${event.level}] [${event.layer}] ${event.event}${event.detail ? ` · ${event.detail}` : ""}`),
       "Recent runtime log:",
       ...logs.slice(-80),
     ].join("\n");
     await navigator.clipboard.writeText(safeReport);
     setReportCopied(true);
     window.setTimeout(() => setReportCopied(false), 1800);
+  }
+
+  async function saveSearchApiKey() {
+    if (!searchApiKey.trim() || searchSettingsBusy) return;
+    setSearchSettingsBusy(true);
+    setSearchSettingsMessage(null);
+    try {
+      const next = await invoke<SearchProviderStatus>("save_brave_api_key", { request: { apiKey: searchApiKey } });
+      setSearchStatus(next);
+      setSearchApiKey("");
+      setSearchSettingsMessage(t("searchKeySaved"));
+      setSearchError(null);
+    } catch (error) {
+      setSearchSettingsMessage(localizedSearchError(error));
+    } finally {
+      setSearchApiKey("");
+      setSearchSettingsBusy(false);
+    }
+  }
+
+  async function removeSearchApiKey() {
+    if (searchSettingsBusy) return;
+    setSearchSettingsBusy(true);
+    setSearchSettingsMessage(null);
+    try {
+      const next = await invoke<SearchProviderStatus>("delete_brave_api_key");
+      setSearchStatus(next);
+      setSearchSettingsMessage(t("searchKeyRemoved"));
+    } catch (error) {
+      setSearchSettingsMessage(localizedSearchError(error));
+    } finally {
+      setSearchApiKey("");
+      setSearchSettingsBusy(false);
+    }
+  }
+
+  function toggleWebSearch() {
+    setSearchError(null);
+    setWebSearchEnabled((value) => !value);
   }
 
   async function copyEndpoint() {
@@ -324,8 +418,10 @@ export default function App() {
         config: { runtimePath, modelPath, projectorPath: projectorPath || null, port, contextSize },
       });
       setStatus(next);
+      recordDiagnostic("runtime", "info", "server_ready", `port=${next.port}`);
     } catch (error) {
       setStatus({ phase: "error", port, detail: String(error) });
+      recordDiagnostic("runtime", "error", "server_start_failed");
     }
   }
 
@@ -333,14 +429,17 @@ export default function App() {
     setStatus({ phase: "stopping", port });
     try {
       setStatus(await invoke<ServerStatus>("stop_server"));
+      recordDiagnostic("runtime", "info", "server_stopped");
     } catch (error) {
       setStatus({ phase: "error", port, detail: String(error) });
+      recordDiagnostic("runtime", "error", "server_stop_failed");
     }
   }
 
   async function installManagedModel(model: CatalogModel) {
     setInstallError(null);
     setActiveDownload(model.id);
+    recordDiagnostic("installer", "info", "model_install_started", `model_id=${model.id}`);
     try {
       const managedRuntime = await invoke<string>("install_runtime");
       const installedModel = await invoke<string>("install_model", {
@@ -354,9 +453,11 @@ export default function App() {
       setProjectorPath(installedProjector);
       setContextSize(model.contextSize);
       await refreshCatalog();
+      recordDiagnostic("installer", "info", "model_install_succeeded", `model_id=${model.id}`);
     } catch (error) {
       const message = String(error).toLowerCase();
       if (!message.includes("cancel") && !message.includes("paused")) setInstallError(String(error));
+      recordDiagnostic("installer", "error", "model_install_failed", `model_id=${model.id}`);
     } finally {
       setActiveDownload(null);
     }
@@ -458,6 +559,7 @@ export default function App() {
       return;
     }
     setRagBusy(true);
+    recordDiagnostic("rag", "info", "document_import_started", `count=${paths.length}`);
     const imported: RagDocument[] = [];
     let importError: string | null = null;
     for (const path of paths) {
@@ -465,6 +567,7 @@ export default function App() {
         imported.push(await invoke<RagDocument>("import_rag_document", { request: { path } }));
       } catch (error) {
         importError = String(error);
+        recordDiagnostic("rag", "error", "document_import_failed");
       }
     }
     if (imported.length) {
@@ -473,6 +576,7 @@ export default function App() {
         ? { ...chat, ragDocumentIds: [...new Set([...(chat.ragDocumentIds ?? []), ...importedIds])], updatedAt: Date.now() }
         : chat));
       setRagDocuments((current) => [...new Map([...current, ...imported].map((document) => [document.id, document])).values()]);
+      recordDiagnostic("rag", "info", "document_import_succeeded", `count=${imported.length}`);
     }
     if (importError) setRagError(importError);
     setRagBusy(false);
@@ -551,19 +655,30 @@ export default function App() {
     const requestId = crypto.randomUUID();
     const chatId = activeChat.id;
     setActiveRequest(requestId);
-    const sources = webSearchEnabled && content
-      ? await (async () => {
-        setSearching(true);
-        try {
-          return await invoke<WebSearchResult[]>("web_search", { request: { query: content, limit: 5 } });
-        } catch (error) {
-          setAttachmentError(String(error));
-          return [];
-        } finally {
-          setSearching(false);
-        }
-      })()
-      : [];
+    setSearchError(null);
+    let sources: WebSearchResult[] = [];
+    if (webSearchEnabled && content) {
+      setSearching(true);
+      try {
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        sources = await invoke<WebSearchResult[]>("web_search", {
+          request: {
+            query: content,
+            limit: 5,
+            locale,
+            country: resolveSearchCountry(navigator.language, timezone),
+            timezone,
+            freshness: inferSearchFreshness(content),
+          },
+        });
+      } catch (error) {
+        setSearchError(localizedSearchError(error));
+        setActiveRequest(null);
+        setSearching(false);
+        return;
+      }
+      setSearching(false);
+    }
     const ragContext = content && activeChat.ragDocumentIds?.length
       ? await (async () => {
         setRagBusy(true);
@@ -593,9 +708,9 @@ export default function App() {
     if (sources.length) {
       history.push({
         role: "user",
-        content: `${t("webResultsInstruction")}\n${sources.map((source, index) => `[${index + 1}] ${source.title}\n${source.url}\n${source.snippet}`).join("\n\n")}`,
+        content: `${t("webResultsInstruction").replace("{provider}", sources[0]?.provider === "brave" ? "Brave" : "Tavily")}\n${sources.map((source, index) => `[${index + 1}] ${source.title}\n${source.url}\n${source.snippet}`).join("\n\n")}`,
       });
-      assistantMessage.sources = sources;
+      setEphemeralSources((current) => ({ ...current, [requestId]: sources }));
     }
     if (ragContext) {
       history.push({ role: "user", content: ragContext.prompt });
@@ -607,6 +722,7 @@ export default function App() {
     setDraft("");
     setPendingAttachments([]);
     setAttachmentError(null);
+    recordDiagnostic("chat", "info", "request_started", `web=${sources.length > 0} rag=${Boolean(ragContext)}`);
     try {
       const metrics = await invoke<MessageMetrics | null>("stream_chat", { request: { requestId, port, messages: history } });
       if (metrics) {
@@ -614,10 +730,12 @@ export default function App() {
           message.id === requestId ? { ...message, metrics } : message,
         ));
       }
+      recordDiagnostic("chat", "info", "request_succeeded", metrics ? `total_tokens=${metrics.totalTokens}` : undefined);
     } catch (error) {
       updateChatMessages(chatId, (current) => current.map((message) =>
           message.id === requestId ? { ...message, content: String(error) } : message,
-        ));
+      ));
+      recordDiagnostic("chat", "error", "request_failed");
     } finally {
       setActiveRequest(null);
     }
@@ -673,7 +791,7 @@ export default function App() {
             </div>)}</div>
         </div>
         <div className="sidebar-footer">
-          <div className="privacy"><span className="privacy-dot" />{t("privacy")}</div>
+          <div className="privacy"><span className="privacy-dot" />{webSearchEnabled ? t("privacyWithSearch").replace("{provider}", searchProviderName) : t("privacy")}</div>
           <div className="locale-switch" aria-label="Language">{(["ru", "en"] as const).map((item) => <button className={locale === item ? "active" : ""} onClick={() => setLocale(item)} key={item}>{item.toUpperCase()}</button>)}</div>
           <ExternalLink href="https://zakharov.asia/ru/">{t("developedBy")} <ExternalIcon /></ExternalLink>
         </div>
@@ -682,9 +800,12 @@ export default function App() {
         {view === "chat" && <>
           <header className="pane-bar"><button className="model-picker" onClick={() => setView("models")}><Logo small /><span><small>{t("localModel")}</small>{status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))}</span><ChevronIcon /></button>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer}>{t("stopModel")}</button>}</div></details></header>
           <div className={`conversation ${messages.length === 0 ? "is-empty" : ""}`}>
-            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{status.phase === "ready" ? t("chatWelcome") : t("chooseModelFirst")}</h1>{status.phase !== "ready" && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? <MarkdownMessage>{message.content || (activeRequest === message.id ? t("generating") : "")}</MarkdownMessage> : <div className="plain-message">{message.content}</div>}{message.sources?.length ? <div className="sources"><small>{t("sources")}</small>{message.sources.map((source, index) => <ExternalLink href={source.url} key={source.url}>{index + 1}. {source.title}</ExternalLink>)}</div> : null}{message.documentSources?.length ? <div className="document-sources"><small>{t("documentSources")}</small>{message.documentSources.map((source) => <span key={`${source.documentId}-${source.chunkId}`} title={source.excerpt}>[{source.label}] {source.documentName} · {t("fragment")} {source.ordinal}</span>)}</div> : null}{message.role === "assistant" && message.metrics && <div className="message-metrics" title={`${t("promptTokens")}: ${formatCount(message.metrics.promptTokens, locale)} · ${t("totalTokens")}: ${formatCount(message.metrics.totalTokens, locale)}`}>{formatCount(message.metrics.completionTokens, locale)} {t("outputTokensUnit")} · {formatSpeed(message.metrics.tokensPerSecond, locale)} {t("tokensPerSecond")} · {formatDuration(message.metrics.elapsedMs, locale)}</div>}</div></article>)}
+            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{status.phase === "ready" ? t("chatWelcome") : t("chooseModelFirst")}</h1>{status.phase !== "ready" && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => {
+              const sources = ephemeralSources[message.id] ?? message.sources;
+              return <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? <MarkdownMessage>{message.content || (activeRequest === message.id ? t("generating") : "")}</MarkdownMessage> : <div className="plain-message">{message.content}</div>}{sources?.length ? <div className="sources"><small>{t("sources")}</small>{sources.map((source, index) => <ExternalLink href={source.url} key={`${message.id}-${index}-${source.url}`}>{index + 1}. {source.title}{source.age ? ` · ${source.age}` : ""}</ExternalLink>)}<em>{t("sourcesSessionOnly")}</em></div> : null}{message.documentSources?.length ? <div className="document-sources"><small>{t("documentSources")}</small>{message.documentSources.map((source) => <span key={`${source.documentId}-${source.chunkId}`} title={source.excerpt}>[{source.label}] {source.documentName} · {t("fragment")} {source.ordinal}</span>)}</div> : null}{message.role === "assistant" && message.metrics && <div className="message-metrics" title={`${t("promptTokens")}: ${formatCount(message.metrics.promptTokens, locale)} · ${t("totalTokens")}: ${formatCount(message.metrics.totalTokens, locale)}`}>{formatCount(message.metrics.completionTokens, locale)} {t("outputTokensUnit")} · {formatSpeed(message.metrics.tokensPerSecond, locale)} {t("tokensPerSecond")} · {formatDuration(message.metrics.elapsedMs, locale)}</div>}</div></article>;
+            })}
           </div>
-          <div className="composer-wrap">{ragDocuments.length ? <details className="rag-documents"><summary>{t("ragReady").replace("{count}", String(ragDocuments.length))}</summary><div>{ragDocuments.map((document) => <span key={document.id}><span><strong>{document.name}</strong><small>{document.chunkCount} {t("fragments")}</small></span><button onClick={() => detachRagDocument(document.id)} aria-label={`${t("detachRagDocument")}: ${document.name}`}>×</button></span>)}</div></details> : null}{pendingAttachments.length ? <div className="pending-attachments">{pendingAttachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? <img src={attachment.content} alt="" /> : <FileIcon />}<span>{attachment.name}</span><button onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))} aria-label={t("removeAttachment")}>×</button></span>)}</div> : null}{(attachmentError || ragError) && <div className="composer-error">{attachmentError || ragError}</div>}<div className="composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={t("placeholder")} disabled={status.phase !== "ready" || Boolean(activeRequest)} rows={2} /><div className="composer-actions"><button className="tool-button" onClick={chooseAttachments} disabled={status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /></button><button className="tool-button rag-button" onClick={chooseRagDocuments} disabled={Boolean(activeRequest) || ragBusy || (activeChat?.ragDocumentIds?.length ?? 0) >= 12} aria-label={t("addRagDocuments")} title={t("addRagDocuments")}><KnowledgeIcon /></button><button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={() => setWebSearchEnabled((value) => !value)} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} title={t("webSearchDisclosure")}><GlobeIcon /></button><button className="send-button" onClick={sendMessage} disabled={(!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching || ragBusy} aria-label={t("send")}><SendIcon /></button></div></div>{ragBusy && <div className="rag-disclosure">{t("ragIndexing")}</div>}{webSearchEnabled && <div className="search-disclosure">{searching ? t("searchingWeb") : t("webSearchDisclosure")}</div>}</div>
+          <div className="composer-wrap">{ragDocuments.length ? <details className="rag-documents"><summary>{t("ragReady").replace("{count}", String(ragDocuments.length))}</summary><div>{ragDocuments.map((document) => <span key={document.id}><span><strong>{document.name}</strong><small>{document.chunkCount} {t("fragments")}</small></span><button onClick={() => detachRagDocument(document.id)} aria-label={`${t("detachRagDocument")}: ${document.name}`}>×</button></span>)}</div></details> : null}{pendingAttachments.length ? <div className="pending-attachments">{pendingAttachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? <img src={attachment.content} alt="" /> : <FileIcon />}<span>{attachment.name}</span><button onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))} aria-label={t("removeAttachment")}>×</button></span>)}</div> : null}{(attachmentError || ragError || searchError) && <div className="composer-error">{searchError || attachmentError || ragError}</div>}<div className="composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={t("placeholder")} disabled={status.phase !== "ready" || Boolean(activeRequest)} rows={2} /><div className="composer-actions"><button className="tool-button" onClick={chooseAttachments} disabled={status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /></button><button className="tool-button rag-button" onClick={chooseRagDocuments} disabled={Boolean(activeRequest) || ragBusy || (activeChat?.ragDocumentIds?.length ?? 0) >= 12} aria-label={t("addRagDocuments")} title={t("addRagDocuments")}><KnowledgeIcon /></button><button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={toggleWebSearch} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} aria-label={t("webSearch")} title={t("webSearch")}><GlobeIcon /></button><button className="send-button" onClick={sendMessage} disabled={(!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching || ragBusy} aria-label={t("send")}><SendIcon /></button></div></div>{ragBusy && <div className="rag-disclosure">{t("ragIndexing")}</div>}{webSearchEnabled && <div className="search-disclosure">{searching ? t("searchingWeb").replace("{provider}", searchProviderName) : t("webSearchDisclosure").replace("{provider}", searchProviderName)}</div>}</div>
         </>}
         {view === "models" && <div className="content-page">
           <header className="page-heading"><div><h1>{t("modelsTitle")}</h1><p>{t("modelsDescription")}</p></div><div className={`status ${status.phase}`}><i /><span>{phaseLabel}</span></div></header>
@@ -710,7 +831,19 @@ export default function App() {
           <details className="manual-setup"><summary>{t("advancedSetup")}</summary><section className="settings-form"><FileField label={t("runtime")} value={runtimePath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("runtime")} /><FileField label={t("model")} value={modelPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("model")} /><FileField label={t("projector")} value={projectorPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("projector")} /><div className="field-row"><label>{t("context")}<select value={contextSize} onChange={(event) => setContextSize(Number(event.target.value))} disabled={status.phase === "ready"}><option value={4096}>4K</option><option value={8192}>8K</option><option value={16384}>16K</option><option value={32768}>32K</option></select></label><label>{t("port")}<input type="number" min={1024} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} disabled={status.phase === "ready"} /></label></div><div className="compatibility-note"><strong>{t("compatibleNote")}</strong><span>{t("manualNote")}</span></div></section></details>
           {status.detail && <p className="status-detail model-status">{status.detail}</p>}<div className="form-actions model-start">{status.phase === "ready" || status.phase === "stopping" ? <button className="primary stop" onClick={stopServer} disabled={status.phase === "stopping"}>{t("stop")}</button> : <button className="primary" onClick={startServer} disabled={!canStart}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div>
         </div>}
-        {view === "diagnostics" && <div className="content-page narrow"><header className="page-heading"><div><h1>{t("diagnostics")}</h1><p>{t("debugPrivacy")}</p></div><button className="primary" onClick={copyDiagnosticReport}>{reportCopied ? t("reportCopied") : t("copyReport")}</button></header><div className="diagnostic-list"><InfoRow label={t("system")} value={`${systemInfo?.chip ?? "—"} · ${systemInfo?.architecture ?? "—"} · macOS ${systemInfo?.macosVersion ?? "—"}`} /><InfoRow label={t("memory")} value={formatBytes(systemInfo?.memoryBytes ?? 0, locale)} /><InfoRow label={t("disk")} value={formatBytes(systemInfo?.freeDiskBytes ?? 0, locale)} /><InfoRow label={t("localModel")} value={modelPath ? fileName(modelPath) : t("notSelected")} /><InfoRow label="Endpoint" value={`http://127.0.0.1:${port}/v1`} /></div><details className="logs"><summary>{t("logs")}<button onClick={(event) => { event.preventDefault(); setLogs([]); }}>{t("clear")}</button></summary><pre>{logs.join("\n") || "—"}</pre></details></div>}
+        {view === "diagnostics" && <div className="content-page narrow">
+          <header className="page-heading"><div><h1>{t("diagnostics")}</h1><p>{t("debugPrivacy")}</p></div><button className="primary" onClick={copyDiagnosticReport}>{reportCopied ? t("reportCopied") : t("copyReport")}</button></header>
+          <section className="search-settings">
+            <div className="section-heading"><div><h2>{t("searchSettingsTitle")}</h2><p>{t("searchSettingsDescription")}</p></div><span className="endpoint-state ready">{searchProviderName}</span></div>
+            <p className="search-keyless-note">{t("searchKeylessNotice")}</p>
+            <div className="search-key-form"><input type="password" autoComplete="off" spellCheck={false} value={searchApiKey} onChange={(event) => setSearchApiKey(event.target.value)} placeholder={t("searchKeyPlaceholder")} aria-label={t("searchKeyPlaceholder")} /><button className="primary" onClick={saveSearchApiKey} disabled={!searchApiKey.trim() || searchSettingsBusy}>{searchSettingsBusy ? t("searchChecking") : t("searchSaveAndCheck")}</button>{searchStatus.braveConfigured && <button className="quiet danger" onClick={removeSearchApiKey} disabled={searchSettingsBusy}>{t("searchRemoveKey")}</button>}</div>
+            {searchSettingsMessage && <p className="search-settings-message">{searchSettingsMessage}</p>}
+            <ExternalLink href="https://api-dashboard.search.brave.com/app/keys">{t("searchOpenDashboard")} <ExternalIcon /></ExternalLink>
+          </section>
+          <div className="diagnostic-list"><InfoRow label={t("system")} value={`${systemInfo?.chip ?? "—"} · ${systemInfo?.architecture ?? "—"} · macOS ${systemInfo?.macosVersion ?? "—"}`} /><InfoRow label={t("memory")} value={formatBytes(systemInfo?.memoryBytes ?? 0, locale)} /><InfoRow label={t("disk")} value={formatBytes(systemInfo?.freeDiskBytes ?? 0, locale)} /><InfoRow label={t("localModel")} value={modelPath ? fileName(modelPath) : t("notSelected")} /><InfoRow label={t("webSearch")} value={searchProviderName} /><InfoRow label="Endpoint" value={`http://127.0.0.1:${port}/v1`} /></div>
+          <details className="logs"><summary>{t("applicationEvents")}<button onClick={(event) => { event.preventDefault(); setDiagnosticEvents([]); if (isTauri) void invoke("clear_diagnostics"); }}>{t("clear")}</button></summary><pre>{diagnosticEvents.slice(-200).map((event) => `${new Date(event.timestampMs).toLocaleTimeString()} [${event.level}] [${event.layer}] ${event.event}${event.detail ? ` · ${event.detail}` : ""}`).join("\n") || "—"}</pre></details>
+          <details className="logs"><summary>{t("logs")}<button onClick={(event) => { event.preventDefault(); setLogs([]); }}>{t("clear")}</button></summary><pre>{logs.join("\n") || "—"}</pre></details>
+        </div>}
         {view === "about" && <div className="content-page narrow about-page"><Logo /><h1>{t("aboutTitle")}</h1><p>{t("aboutText")}</p><div className="about-links"><ExternalLink href="https://zakharov.asia/ru/">{t("website")} <ExternalIcon /></ExternalLink><ExternalLink href="https://github.com/globa-me/gz-bonsai-27b">{t("sourceCode")} <ExternalIcon /></ExternalLink></div><small>{t("developedBy")}</small></div>}
       </section>
     </main>

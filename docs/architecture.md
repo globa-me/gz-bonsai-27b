@@ -15,7 +15,8 @@ Rust application core
   ├─ health polling
   ├─ bounded attachment reader
   ├─ local document extraction + BM25 retrieval
-  ├─ opt-in Bing RSS search
+  ├─ opt-in Tavily Keyless / Brave Search adapter
+  ├─ sanitized cross-layer diagnostics ring buffer
   └─ SSE client + process RSS telemetry
        │ localhost only
 Signed bundled PrismML llama-server
@@ -25,7 +26,7 @@ GGUF model (+ optional mmproj)
 
 Rust запускает выбранный executable с `--host 127.0.0.1`, проверяет порт, передаёт модель, контекст и Metal offload, затем ждёт успешный `/health`. stdout/stderr поступает в диагностический журнал. Чат отправляется из Rust, а SSE-токены возвращаются событием `chat-token`. Финальный SSE-блок `usage`/`timings` преобразуется в метрики ответа и сохраняется вместе с сообщением в IndexedDB.
 
-В релизе `0.4.0` совместимый arm64 runtime `prism-b10709-9a9394a` включён как ресурс приложения. Все Mach-O и dylib повторно подписаны Developer ID проекта до подписи app bundle. Это исключает запуск неподписанного скачанного executable. Модели и vision projectors загружаются только по закреплённым Hugging Face commit URL.
+В релизе `0.5.0` совместимый arm64 runtime `prism-b10709-9a9394a` включён как ресурс приложения. Все Mach-O и dylib повторно подписаны Developer ID проекта до подписи app bundle. Это исключает запуск неподписанного скачанного executable. Модели и vision projectors загружаются только по закреплённым Hugging Face commit URL.
 
 Inference выполняет PrismML llama.cpp с Metal offload (`-ngl 99`). Это оптимизированный Apple Silicon runtime, но не MLX. Переход на MLX потребует отдельного нативного inference host и не маскируется маркетинговой подписью.
 
@@ -47,7 +48,10 @@ Inference выполняет PrismML llama.cpp с Metal offload (`-ngl 99`). Э�
 - текстовые вложения ограничены 2 МБ, изображения — 12 МБ; допустимые форматы заданы allowlist;
 - RAG-документы ограничены 20 МБ, извлечённый текст — 4 млн символов; индекс хранится без исходного пути в Application Support;
 - RAG-контекст не записывается как сообщение и ограничен 3–12 тыс. символов; в историю попадают только id документов и снимки цитат;
-- веб-поиск вызывается только после явного включения в UI, имеет fixed HTTPS endpoint, timeout, лимит ответа и помечает результаты как недоверенные данные;
+- веб-поиск вызывается только после явного включения в UI, имеет fixed HTTPS endpoints, Safe Search, timeout, лимит ответа и помечает результаты как недоверенные данные;
+- без ключа используется Tavily Keyless; если валидный Brave key сохранён в Keychain, используется Brave без скрытого fallback при ошибке;
+- поисковые URL и snippets существуют только в памяти текущего запуска и удаляются из сохраняемой истории; запросы и ключи не попадают в диагностику;
+- диагностический ring buffer ограничен 500 событиями, принимает только известные слои/уровни и маскирует домашний путь и значения authentication headers;
 - история чатов остаётся в локальном WebView IndexedDB и не входит в диагностический отчёт;
 - пользовательское название чата помечается как ручное и больше не заменяется первым сообщением; удаление изменяет только локальную историю;
 - точные токены и скорость новых ответов берутся из `usage`/`timings` llama-server; старые ответы без метрик остаются совместимыми;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeChatTitle, renameChatSession, type ChatSession } from "./chatStore";
+import { normalizeChatTitle, renameChatSession, sanitizeChatsForStorage, type ChatSession } from "./chatStore";
 
 const chat: ChatSession = {
   id: "chat-1",
@@ -25,5 +25,19 @@ describe("chat titles", () => {
 
   it("keeps the old title when the new title is empty", () => {
     expect(renameChatSession(chat, "   ")).toBe(chat);
+  });
+
+  it("never persists web search result payloads", () => {
+    const stored = sanitizeChatsForStorage([{
+      ...chat,
+      messages: [{
+        id: "answer-1",
+        role: "assistant",
+        content: "Answer [1]",
+        sources: [{ title: "Source", url: "https://example.com", snippet: "Raw provider data", provider: "brave" }],
+      }],
+    }]);
+    expect(stored[0].messages[0].content).toBe("Answer [1]");
+    expect(stored[0].messages[0].sources).toBeUndefined();
   });
 });

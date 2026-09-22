@@ -14,6 +14,8 @@ export interface SearchSource {
   title: string;
   url: string;
   snippet: string;
+  provider?: "brave" | "tavily" | "bing-legacy";
+  age?: string;
 }
 
 export interface ChatMessage {
@@ -58,7 +60,7 @@ export async function loadChats(): Promise<ChatSession[]> {
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(storeName, "readonly");
     const request = transaction.objectStore(storeName).get(workspaceKey);
-    request.onsuccess = () => resolve(Array.isArray(request.result) ? request.result : []);
+    request.onsuccess = () => resolve(Array.isArray(request.result) ? sanitizeChatsForStorage(request.result) : []);
     request.onerror = () => reject(request.error);
     transaction.oncomplete = () => database.close();
   });
@@ -68,13 +70,20 @@ export async function saveChats(chats: ChatSession[]): Promise<void> {
   const database = await openDatabase();
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(storeName, "readwrite");
-    transaction.objectStore(storeName).put(chats, workspaceKey);
+    transaction.objectStore(storeName).put(sanitizeChatsForStorage(chats), workspaceKey);
     transaction.oncomplete = () => {
       database.close();
       resolve();
     };
     transaction.onerror = () => reject(transaction.error);
   });
+}
+
+export function sanitizeChatsForStorage(chats: ChatSession[]): ChatSession[] {
+  return chats.map((chat) => ({
+    ...chat,
+    messages: chat.messages.map(({ sources: _sources, ...message }) => message),
+  }));
 }
 
 export function createChat(title: string): ChatSession {

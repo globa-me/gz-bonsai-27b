@@ -2,7 +2,7 @@
 <h1 align="center">GZ Bonsai 27B</h1>
 <p align="center">Простое открытое macOS-приложение для приватного запуска моделей Bonsai на своём Mac.</p>
 <p align="center">
-  <a href="https://github.com/globa-me/gz-bonsai-27b/releases/tag/v0.4.0"><img alt="Release 0.4.0" src="https://img.shields.io/badge/stable-0.4.0-2f6949" /></a>
+  <a href="https://github.com/globa-me/gz-bonsai-27b/releases/tag/v0.5.0"><img alt="Release 0.5.0" src="https://img.shields.io/badge/stable-0.5.0-2f6949" /></a>
   <img alt="macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-2f6949" />
   <img alt="License MIT" src="https://img.shields.io/badge/code-MIT-dceee2" />
 </p>
@@ -11,7 +11,7 @@
 
 ## Скачать
 
-[Скачать GZ Bonsai 27B 0.4.0 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.4.0/GZ-Bonsai-27B-0.4.0-arm64.dmg) — подписанный DMG. Перетащите приложение в папку Applications и работайте на здоровье :-).
+[Скачать GZ Bonsai 27B 0.5.0 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.5.0/GZ-Bonsai-27B-0.5.0-arm64.dmg) — подписанный DMG. Перетащите приложение в папку Applications и работайте на здоровье :-).
 
 Совместимый runtime уже находится внутри приложения. Откройте «Модели», скачайте выбранный вариант и запустите локальный чат.
 
@@ -21,7 +21,7 @@
 
 Что важно знать:
 
-- по умолчанию данные и сообщения остаются на вашем компьютере; при явно включённом веб-поиске текст запроса отправляется Bing;
+- по умолчанию данные и сообщения остаются на вашем компьютере; при явно включённом веб-поиске текст запроса отправляется активному провайдеру — Tavily Keyless или Brave;
 - сервер слушает только `127.0.0.1`;
 - русский интерфейс включён по умолчанию, английский доступен переключателем;
 - рекомендации по памяти это РЕКОМЕНДАЦИИ, экспериментируйте со своей машиной и смотрите, что будет лучше работать;
@@ -30,7 +30,7 @@
 
 ## Что уже работает
 
-Текущий `0.4.0` — рабочая версия для macOS на Apple Silicon:
+Текущий `0.5.0` — рабочая версия для macOS на Apple Silicon:
 
 - Tauri 2 + React + TypeScript;
 - определение чипа, архитектуры, RAM, версии macOS и свободного места;
@@ -47,7 +47,11 @@
 - сводная статистика по текущему чату;
 - безопасный Markdown, текстовые, кодовые и графические вложения;
 - автоматическая загрузка проверенного vision projector для 27B-моделей; 1.7B, 4B и 8B отмечены как text-only;
-- включаемый веб-поиск: запрос отправляется Bing;
+- локальный RAG по PDF, DOCX, TXT, Markdown, CSV и JSON с цитатами использованных фрагментов;
+- включаемый веб-поиск без обязательной настройки через Tavily Keyless, Safe Search и проверенные HTTPS-источники;
+- необязательный Brave Search API key для более высоких лимитов; ключ проверяется и хранится только в macOS Keychain;
+- поисковые источники не сохраняются в истории, а при ошибке провайдера приложение не генерирует неподкреплённый ответ;
+- единый обезличенный журнал событий frontend, storage, installer, runtime, chat, RAG и search;
 - RU/EN-локализация;
 - подписанная Developer ID и нотариально заверенная Apple сборка.
 
@@ -91,19 +95,18 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 Дополнительно выполнен реальный smoke-тест на Apple M3 Pro: официальный runtime `prism-b10709-9a9394a` загрузил Bonsai 1.7B Q1_0, прошёл health check и вернул потоковый ответ. Условия и границы проверки: [docs/smoke-test-2026-09-21.md](docs/smoke-test-2026-09-21.md).
 
-Проверка финального релиза `0.4.0`, включая точные токены, скорость, сохранение истории и Apple notarization: [docs/e2e-0.4.0.md](docs/e2e-0.4.0.md).
-
-В текущей ветке разработки после `0.4.0` добавлен локальный RAG по PDF, DOCX, TXT, Markdown, CSV и JSON: документы индексируются в Application Support, к модели отправляются только найденные фрагменты, а ответы сохраняют локальные ссылки `[D1]`, `[D2]`. Устройство, ограничения и следующий этап semantic retrieval описаны в [docs/rag.md](docs/rag.md).
+Проверка финального релиза `0.5.0`, включая RAG, веб-поиск, диагностику, подпись и Apple notarization: [docs/e2e-0.5.0.md](docs/e2e-0.5.0.md). Устройство и границы поиска описаны в [docs/web-search.md](docs/web-search.md), локального RAG — в [docs/rag.md](docs/rag.md).
 
 ## Архитектура и безопасность
 
 - React отвечает за интерфейс и локализацию.
-- Rust управляет проверяемыми загрузками, `llama-server`, health check и streaming API через Tauri events.
+- Rust управляет проверяемыми загрузками, `llama-server`, локальным RAG, веб-поиском, health check и streaming API через Tauri events.
 - Все сетевые артефакты закреплены commit URL, размером и SHA-256; готовый GGUF появляется только после проверки и атомарного переименования.
 - Runtime и его dylib подписаны Developer ID и находятся внутри нотариально заверенного app bundle.
 - Полные пути удаляются из диагностического отчёта.
 - Веса `*.gguf`, временные загрузки и build-артефакты исключены из Git.
 - Сетевой адрес жёстко ограничен `127.0.0.1`.
+- Внешний поиск выключен по умолчанию; при включении отправляется только текущий поисковый запрос, но не чат и не документы.
 
 Подробности: [docs/architecture.md](docs/architecture.md).
 

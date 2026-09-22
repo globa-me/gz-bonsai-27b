@@ -1,6 +1,8 @@
 use futures_util::StreamExt;
+mod diagnostics;
 mod installer;
 mod rag;
+mod search;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -134,42 +136,6 @@ struct AttachmentPayload {
     content: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WebSearchRequest {
-    query: String,
-    limit: Option<usize>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct SearchRss {
-    channel: SearchChannel,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct SearchChannel {
-    #[serde(default)]
-    item: Vec<SearchItem>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct SearchItem {
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    link: String,
-    #[serde(default)]
-    description: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WebSearchResult {
-    title: String,
-    url: String,
-    snippet: String,
-}
-
 fn command_text(program: &str, args: &[&str]) -> Option<String> {
     let output = StdCommand::new(program).args(args).output().ok()?;
     output
@@ -183,26 +149,6 @@ fn process_memory_bytes(pid: u32) -> Option<u64> {
     command_text("/bin/ps", &["-o", "rss=", "-p", &pid])
         .and_then(|value| value.trim().parse::<u64>().ok())
         .map(|kilobytes| kilobytes.saturating_mul(1024))
-}
-
-fn clean_search_snippet(value: &str) -> String {
-    let mut result = String::with_capacity(value.len());
-    let mut inside_tag = false;
-    for character in value.chars() {
-        match character {
-            '<' => inside_tag = true,
-            '>' => inside_tag = false,
-            _ if !inside_tag => result.push(character),
-            _ => {}
-        }
-    }
-    result
-        .replace("&amp;", "&")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[tauri::command]
@@ -293,50 +239,6 @@ async fn read_attachment(request: AttachmentRequest) -> Result<AttachmentPayload
     })
 }
 
-#[tauri::command]
-async fn web_search(
-    state: State<'_, AppState>,
-    request: WebSearchRequest,
-) -> Result<Vec<WebSearchResult>, String> {
-    let query = request.query.trim();
-    if query.is_empty() || query.chars().count() > 500 {
-        return Err("Search query must contain between 1 and 500 characters".into());
-    }
-    let response = state
-        .client
-        .get("https://www.bing.com/search")
-        .query(&[("q", query), ("format", "rss")])
-        .timeout(Duration::from_secs(12))
-        .send()
-        .await
-        .map_err(|error| format!("Web search failed: {error}"))?;
-    if !response.status().is_success() {
-        return Err(format!("Web search returned {}", response.status()));
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("Could not read search response: {error}"))?;
-    if bytes.len() > 1024 * 1024 {
-        return Err("Search response exceeded 1 MB".into());
-    }
-    let feed: SearchRss = quick_xml::de::from_reader(bytes.as_ref())
-        .map_err(|error| format!("Could not parse search response: {error}"))?;
-    let limit = request.limit.unwrap_or(5).clamp(1, 5);
-    Ok(feed
-        .channel
-        .item
-        .into_iter()
-        .filter(|item| item.link.starts_with("https://") || item.link.starts_with("http://"))
-        .take(limit)
-        .map(|item| WebSearchResult {
-            title: item.title,
-            url: item.link,
-            snippet: clean_search_snippet(&item.description),
-        })
-        .collect())
-}
-
 fn validate_file(path: &str, label: &str) -> Result<PathBuf, String> {
     if path.trim().is_empty() {
         return Err(format!("{label}: path is empty"));
@@ -402,6 +304,14 @@ where
     tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
+            let line = diagnostics::redact(&line);
+            diagnostics::push(
+                &app,
+                "runtime",
+                "debug",
+                "server_output",
+                Some(format!("[{prefix}] {line}")),
+            );
             let _ = app.emit("server-log", format!("[{prefix}] {line}"));
         }
     });
@@ -442,11 +352,37 @@ async fn start_server(
         backend: Some("llama.cpp · Metal · optimized for Apple Silicon".into()),
     };
     emit_status(&app, &managed.status);
+    diagnostics::push(
+        &app,
+        "runtime",
+        "info",
+        "server_starting",
+        Some(format!(
+            "runtime={} model={} port={} context={}",
+            runtime
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("unknown"),
+            model
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("unknown"),
+            config.port,
+            config.context_size
+        )),
+    );
 
     let args = server_args(&config, &model, projector.as_deref());
     let _ = app.emit(
         "server-log",
-        format!("Starting {} on {HOST}:{}", runtime.display(), config.port),
+        format!(
+            "Starting {} on {HOST}:{}",
+            runtime
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("llama-server"),
+            config.port
+        ),
     );
     let mut command = Command::new(&runtime);
     command
@@ -764,10 +700,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .manage(diagnostics::DiagnosticsState::default())
         .manage(AppState {
             server: Mutex::new(ManagedServer::default()),
             client: http_client.clone(),
         })
+        .manage(search::SearchState::new(http_client.clone()))
         .manage(installer::InstallerState::new(http_client))
         .invoke_handler(tauri::generate_handler![
             system_info,
@@ -776,7 +714,13 @@ pub fn run() {
             server_status,
             stream_chat,
             read_attachment,
-            web_search,
+            search::web_search,
+            search::search_provider_status,
+            search::save_brave_api_key,
+            search::delete_brave_api_key,
+            diagnostics::record_diagnostic,
+            diagnostics::diagnostic_snapshot,
+            diagnostics::clear_diagnostics,
             rag::import_rag_document,
             rag::list_rag_documents,
             rag::search_rag_documents,

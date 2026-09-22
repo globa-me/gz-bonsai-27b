@@ -93,6 +93,7 @@ nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-wi
 .message-attachments span { border: 1px solid #dce2dd; border-radius: 8px; padding: 6px 8px; background: #f7f9f7; font-size: 10px; }
 .sources { display: grid; gap: 4px; margin-top: 13px; padding-top: 10px; border-top: 1px solid #e7ebe7; font-size: 10px; }
 .sources small { color: #68766d; font-weight: 700; }
+.sources em { color: #7b847e; font-size: 9px; font-style: normal; }
 .document-sources { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 11px; padding-top: 10px; border-top: 1px solid #e7ebe7; font-size: 9px; }
 .document-sources small { width: 100%; color: #68766d; font-weight: 700; }
 .document-sources span { border: 1px solid #d6e2d8; border-radius: 999px; padding: 4px 7px; background: #f1f7f2; color: #41614d; }
@@ -195,6 +196,15 @@ nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-wi
 .diagnostic-list > div:last-child { border: 0; }
 .diagnostic-list span { color: #59685f; font-size: 10px; }
 .diagnostic-list strong { color: #35433a; font-size: 11px; font-weight: 570; overflow-wrap: anywhere; }
+.search-settings { margin-bottom: 16px; padding: 16px; border: 1px solid #d8e2da; border-radius: 13px; background: #fff; }
+.search-settings .section-heading { margin-bottom: 12px; }
+.search-key-form { display: flex; gap: 8px; align-items: center; }
+.search-key-form input { min-width: 0; flex: 1; border: 1px solid #dce0dc; border-radius: 9px; padding: 10px 11px; background: #fafbfa; color: #33443a; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.search-key-form .primary, .search-key-form .quiet { flex: none; }
+.search-settings-message { margin: 10px 0 0; color: #536c5c; font-size: 10px; line-height: 1.45; }
+.search-keyless-note { margin: 0 0 12px; padding: 9px 10px; border-radius: 9px; background: #f4f7f4; color: #647068; font-size: 10px; line-height: 1.5; }
+.search-settings > a { display: inline-flex; align-items: center; gap: 4px; margin-top: 11px; color: #35684a; font-size: 10px; text-decoration: none; }
+.search-settings > a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .logs { margin-top: 16px; border: 1px solid #e0e4df; border-radius: 13px; background: #fff; }
 .logs summary { display: flex; justify-content: space-between; padding: 13px 15px; color: #53635a; font-size: 11px; font-weight: 650; cursor: pointer; }
 .logs summary button { border: 0; background: transparent; color: #598069; font-size: 10px; }

@@ -189,7 +189,7 @@ fn projector_definition(model: ModelDefinition) -> Option<ProjectorDefinition> {
             url: "https://huggingface.co/prism-ml/Bonsai-27B-gguf/resolve/f10afb355f104535e3e3e98cf7ab7795c72bd292/Bonsai-27B-mmproj-Q8_0.gguf?download=true",
             filename: "Bonsai-27B-mmproj-Q8_0.gguf",
             size: 629_246_880,
-            sha256: "eb561d41a7bbeb0fcf04883c8af11078ef6ca0a66862a0b68443cfca495269d",
+            sha256: "eb561d41a7bbeb0fcf04883c8af11078ef6cae0a66862a0b68443cfca495269d",
         }),
         "bonsai-2-27b-ptq1" | "bonsai-2-27b-pq2" => Some(ProjectorDefinition {
             url: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/6ed5e12bf84b7a63069882c91dd9e9218647d17b/Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf?download=true",
@@ -674,6 +674,15 @@ mod tests {
             assert_eq!(model.sha256.len(), 64);
             assert!(model.url.starts_with("https://huggingface.co/prism-ml/"));
             assert!(model.size > 0);
+            if let Some(projector) = projector_definition(model) {
+                assert!(projector.filename.ends_with(".gguf"));
+                assert_eq!(projector.sha256.len(), 64);
+                assert!(projector
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit()));
+                assert!(projector.size > 0);
+            }
         }
     }
 

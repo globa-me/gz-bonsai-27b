@@ -1,6 +1,6 @@
 # Проверенные артефакты
 
-Дата проверки: 22 сентября 2026 года.
+Дата повторной проверки: 23 сентября 2026 года.
 
 Этот файл отделяет сведения, полученные из актуальных официальных источников, от продуктовых гипотез и будущих измерений.
 
@@ -14,7 +14,7 @@
 | Bonsai 4B | `78f2c2bacd0904ffaba24b4873ed975e5818354a` | `Bonsai-4B-Q1_0.gguf` | 572 270 624 | `4524b3f997f0f06444e568d1f26e2efd69effa3218c7ad3047432fb171e42168` |
 | Bonsai 8B | `48516770dd04643643e9f9019a2a349cf26c5dbd` | `Bonsai-8B-Q1_0.gguf` | 1 158 654 496 | `284a335aa3fb2ced3b1b01fcb40b08aa783e3b70832767f0dd2e3fdfa134bd54` |
 | Bonsai 27B, 1-bit | `f10afb355f104535e3e3e98cf7ab7795c72bd292` | `Bonsai-27B-Q1_0.gguf` | 3 803 452 480 | `17ef842e47450caeb8eaa3ebfbbab5d2f2278b62b79be107985fb69a2f819aa0` |
-| Bonsai 27B vision projector | `f10afb355f104535e3e3e98cf7ab7795c72bd292` | `Bonsai-27B-mmproj-Q8_0.gguf` | 629 246 880 | `eb561d41a7bbeb0fcf04883c8af11078ef6ca0a66862a0b68443cfca495269d` |
+| Bonsai 27B vision projector | `f10afb355f104535e3e3e98cf7ab7795c72bd292` | `Bonsai-27B-mmproj-Q8_0.gguf` | 629 246 880 | `eb561d41a7bbeb0fcf04883c8af11078ef6cae0a66862a0b68443cfca495269d` |
 
 Источники:
 

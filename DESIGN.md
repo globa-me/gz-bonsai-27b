@@ -255,9 +255,10 @@ Authored icons are outline SVGs with rounded caps and joins, normally 16–20px.
 
 - **Style:** A bottom-anchored white writing surface with an unbordered textarea and square send control.
 - **Shape:** 15px corners and a 68px minimum height (`components.composer`).
-- **Action:** The 34px forest send button uses the authored upward arrow; its disabled state becomes muted gray-green.
+- **Action:** The forest send button uses the authored upward arrow; its disabled state becomes muted gray-green. A visible Stop action takes its place during streaming, and failed answers expose Retry.
 - **Depth:** Use Composer Ambient only, backed by the existing fade from transparent to Main Paper.
-- **File drop:** Dragging files over the chat replaces the work area with a calm, high-contrast drop target. PDF/DOCX route to local RAG; images, text and code route to the pending request.
+- **File drop:** Dragging files over the chat replaces the work area with a calm, high-contrast drop target. PDF/DOCX become chat documents; images and code attach to the pending request; TXT/Markdown/CSV/JSON show a scope choice. The document panel exposes separate detach and local delete actions.
+- **Sources:** Cite one file with one label. Show whether its complete text or selected excerpts were passed to the model; expandable excerpts remain keyboard accessible.
 - **Generation state:** Before the first token, show a compact three-dot Bonsai activity indicator beside explicit status text; respect Reduced Motion and remove the indicator as soon as streamed text appears.
 
 ### Cards / Containers

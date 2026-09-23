@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -7,9 +7,12 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { type Locale, translate } from "./i18n";
 import appIcon from "./assets/app-icon.png";
 import { MarkdownMessage } from "./MarkdownMessage";
-import { createChat, loadChats, normalizeChatTitle, renameChatSession, restoreAutoChatTitle, saveChats, type Attachment, type ChatMessage, type ChatSession, type SearchSource } from "./chatStore";
+import { createChat, loadChats, normalizeChatTitle, renameChatSession, restoreAutoChatTitle, restoreInterruptedAnswers, saveChats, type Attachment, type ChatMessage, type ChatSession, type SearchSource } from "./chatStore";
 import { summarizeMetrics, type MessageMetrics } from "./chatMetrics";
-import { buildRagContext, type RagDocument, type RagSearchHit } from "./rag";
+import { buildRagContext, groupDocumentSources, type RagDocument, type RagSearchHit } from "./rag";
+import { buildPromptHistory } from "./promptHistory";
+import { boundedRepetitionCount } from "./repetition";
+import { createSaveQueue } from "./chatPersistence";
 import { resolveRuntimePath } from "./runtimeSelection";
 import { inferSearchFreshness, resolveSearchCountry, searchErrorCode } from "./webSearch";
 import { classifyDroppedPaths } from "./fileDrop";
@@ -162,9 +165,17 @@ export default function App() {
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
-  const [ragDocuments, setRagDocuments] = useState<RagDocument[]>([]);
+  const [ragDocumentsByChat, setRagDocumentsByChat] = useState<Record<string, RagDocument[]>>({});
   const [ragBusy, setRagBusy] = useState(false);
-  const [ragError, setRagError] = useState<string | null>(null);
+  const [ragBusyChatId, setRagBusyChatId] = useState<string | null>(null);
+  const [ragErrorsByChat, setRagErrorsByChat] = useState<Record<string, string | null>>({});
+  const [pendingFileChoice, setPendingFileChoice] = useState<{ chatId: string; paths: string[] } | null>(null);
+  const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved");
+  const [historyLoadFailed, setHistoryLoadFailed] = useState(false);
+  const saveVersion = useRef(0);
+  const saveQueue = useRef(createSaveQueue(saveChats));
+  const lastSaveEnqueuedAt = useRef(0);
+  const saveCheckpoint = useRef<{ requestId: string; resolve: (saved: boolean) => void } | null>(null);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [searching, setSearching] = useState(false);
   const [searchStatus, setSearchStatus] = useState<SearchProviderStatus>({ provider: "tavily", braveConfigured: false, keylessAvailable: true });
@@ -175,6 +186,7 @@ export default function App() {
   const [ephemeralSources, setEphemeralSources] = useState<Record<string, SearchSource[]>>({});
   const [diagnosticEvents, setDiagnosticEvents] = useState<DiagnosticEvent[]>([]);
   const [activeRequest, setActiveRequest] = useState<string | null>(null);
+  const activeRequestChatId = useRef<string | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
   const [reportCopied, setReportCopied] = useState(false);
   const [endpointCopied, setEndpointCopied] = useState(false);
@@ -185,6 +197,9 @@ export default function App() {
   const [installError, setInstallError] = useState<string | null>(null);
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
+  const ragDocuments = ragDocumentsByChat[activeChatId ?? ""] ?? [];
+  const ragError = ragErrorsByChat[activeChatId ?? ""] ?? null;
+  const pendingFileChoicePaths = pendingFileChoice?.chatId === activeChatId ? pendingFileChoice.paths : [];
   const messages = activeChat?.messages ?? [];
   const chatMetrics = useMemo(
     () => summarizeMetrics(messages.map((message) => message.role === "assistant" ? message.metrics : undefined)),
@@ -192,6 +207,10 @@ export default function App() {
   );
   const activeRagDocumentKey = (activeChat?.ragDocumentIds ?? []).join(",");
   const searchProviderName = searchStatus.provider === "brave" ? "Brave" : "Tavily Keyless";
+
+  function setRagErrorForChat(chatId: string, error: string | null) {
+    setRagErrorsByChat((current) => ({ ...current, [chatId]: error }));
+  }
 
   function recordDiagnostic(layer: DiagnosticEvent["layer"], level: DiagnosticEvent["level"], event: string, detail?: string) {
     if (!isTauri) {
@@ -232,40 +251,86 @@ export default function App() {
     document.documentElement.lang = locale;
   }, [locale, runtimePath, modelPath, projectorPath, contextSize, port]);
 
-  useEffect(() => {
-    void loadChats()
+  async function initializeChats() {
+    await loadChats()
       .then((stored) => {
-        const initial = stored.length ? stored.map(restoreAutoChatTitle) : [createChat(translate(locale, "untitledChat"))];
-        setChats(initial);
-        setActiveChatId(initial[0].id);
+        const initial = stored.length
+          ? stored.map((chat) => restoreAutoChatTitle(restoreInterruptedAnswers(chat, translate(locale, "answerInterrupted"))))
+          : [createChat(translate(locale, "untitledChat"))];
+        setChats((current) => historyLoadFailed ? [...current, ...initial.filter((chat) => !current.some((item) => item.id === chat.id))] : initial);
+        setActiveChatId((current) => current && historyLoadFailed ? current : initial[0].id);
+        setHistoryLoadFailed(false);
+        setHistoryLoaded(true);
+        setSaveState("saved");
         recordDiagnostic("storage", "info", "chat_history_loaded", `chats=${initial.length}`);
       })
       .catch(() => {
         const initial = createChat(translate(locale, "untitledChat"));
-        setChats([initial]);
-        setActiveChatId(initial.id);
+        setChats((current) => current.length ? current : [initial]);
+        setActiveChatId((current) => current ?? initial.id);
+        setHistoryLoadFailed(true);
+        setSaveState("error");
         recordDiagnostic("storage", "error", "chat_history_load_failed");
-      })
-      .finally(() => setHistoryLoaded(true));
+      });
+  }
+
+  useEffect(() => {
+    void initializeChats();
   }, []);
 
   useEffect(() => {
-    if (historyLoaded) void saveChats(chats).catch(() => recordDiagnostic("storage", "error", "chat_history_save_failed"));
+    if (!historyLoaded) return;
+    const version = ++saveVersion.current;
+    setSaveState("saving");
+    let flushed = false;
+    let timer: number | undefined;
+    const checkpoint = saveCheckpoint.current;
+    const includesCheckpoint = Boolean(checkpoint && chats.some((chat) => chat.messages.some((message) => message.id === checkpoint.requestId)));
+    const flush = () => {
+      if (flushed) return;
+      flushed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      lastSaveEnqueuedAt.current = Date.now();
+      void saveQueue.current(chats).then(() => {
+        if (saveVersion.current === version) setSaveState("saved");
+        if (includesCheckpoint && saveCheckpoint.current === checkpoint) {
+          saveCheckpoint.current = null;
+          checkpoint?.resolve(true);
+        }
+      }).catch(() => {
+        if (saveVersion.current === version) setSaveState("error");
+        recordDiagnostic("storage", "error", "chat_history_save_failed");
+        if (includesCheckpoint && saveCheckpoint.current === checkpoint) {
+          saveCheckpoint.current = null;
+          checkpoint?.resolve(false);
+        }
+      });
+    };
+    const flushWhenHidden = () => { if (document.visibilityState === "hidden") flush(); };
+    if (includesCheckpoint || Date.now() - lastSaveEnqueuedAt.current >= 1_500) flush();
+    else timer = window.setTimeout(flush, 350);
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flushWhenHidden);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flushWhenHidden);
+    };
   }, [chats, historyLoaded]);
 
   useEffect(() => {
     const documentIds = activeChat?.ragDocumentIds ?? [];
     if (!isTauri || !documentIds.length) {
-      setRagDocuments([]);
+      if (activeChatId) setRagDocumentsByChat((current) => ({ ...current, [activeChatId]: [] }));
       return;
     }
     let cancelled = false;
     void invoke<RagDocument[]>("list_rag_documents", { request: { documentIds } })
       .then((documents) => {
-        if (!cancelled) setRagDocuments(documents);
+        if (!cancelled && activeChatId) setRagDocumentsByChat((current) => ({ ...current, [activeChatId]: documents }));
       })
       .catch((error) => {
-        if (!cancelled) setRagError(String(error));
+        if (!cancelled && activeChatId) setRagErrorForChat(activeChatId, String(error));
       });
     return () => { cancelled = true; };
   }, [activeChatId, activeRagDocumentKey]);
@@ -590,14 +655,16 @@ export default function App() {
 
   async function importRagDocuments(paths: string[]) {
     if (!activeChat || ragBusy) return;
-    setRagError(null);
+    const chatId = activeChat.id;
+    setRagErrorForChat(chatId, null);
     const selectedPaths = paths
       .slice(0, Math.max(0, 12 - (activeChat.ragDocumentIds?.length ?? 0)));
     if (!selectedPaths.length) {
-      setRagError(t("ragDocumentLimit"));
+      setRagErrorForChat(chatId, t("ragDocumentLimit"));
       return;
     }
     setRagBusy(true);
+    setRagBusyChatId(chatId);
     recordDiagnostic("rag", "info", "document_import_started", `count=${selectedPaths.length}`);
     const imported: RagDocument[] = [];
     let importError: string | null = null;
@@ -614,11 +681,12 @@ export default function App() {
       setChats((current) => current.map((chat) => chat.id === activeChat.id
         ? { ...chat, ragDocumentIds: [...new Set([...(chat.ragDocumentIds ?? []), ...importedIds])], updatedAt: Date.now() }
         : chat));
-      setRagDocuments((current) => [...new Map([...current, ...imported].map((document) => [document.id, document])).values()]);
+      setRagDocumentsByChat((current) => ({ ...current, [activeChat.id]: [...new Map([...(current[activeChat.id] ?? []), ...imported].map((document) => [document.id, document])).values()] }));
       recordDiagnostic("rag", "info", "document_import_succeeded", `count=${imported.length}`);
     }
-    if (importError) setRagError(importError);
+    if (importError) setRagErrorForChat(chatId, importError);
     setRagBusy(false);
+    setRagBusyChatId(null);
   }
 
   async function chooseRagDocuments() {
@@ -634,9 +702,10 @@ export default function App() {
 
   async function handleDroppedPaths(paths: string[]) {
     if (!paths.length) return;
-    const { ragPaths, attachmentPaths } = classifyDroppedPaths(paths);
+    const { ragPaths, attachmentPaths, choicePaths } = classifyDroppedPaths(paths);
     recordDiagnostic("frontend", "info", "files_dropped", `count=${paths.length}`);
     if (ragPaths.length) await importRagDocuments(ragPaths);
+    if (choicePaths.length && activeChatId) setPendingFileChoice({ chatId: activeChatId, paths: choicePaths });
     if (attachmentPaths.length) {
       if (status.phase !== "ready") {
         setAttachmentError(t("dropStartModel"));
@@ -651,7 +720,24 @@ export default function App() {
     setChats((current) => current.map((chat) => chat.id === activeChat.id
       ? { ...chat, ragDocumentIds: (chat.ragDocumentIds ?? []).filter((id) => id !== documentId), updatedAt: Date.now() }
       : chat));
-    setRagDocuments((current) => current.filter((document) => document.id !== documentId));
+    setRagDocumentsByChat((current) => ({ ...current, [activeChat.id]: (current[activeChat.id] ?? []).filter((document) => document.id !== documentId) }));
+  }
+
+  async function deleteRagDocument(documentId: string) {
+    if (!activeChat) return;
+    const usedElsewhere = chats.some((chat) => chat.id !== activeChat.id && chat.ragDocumentIds?.includes(documentId));
+    if (usedElsewhere) {
+      setRagErrorForChat(activeChat.id, t("documentUsedElsewhere"));
+      return;
+    }
+    if (!window.confirm(t("confirmDeleteDocument"))) return;
+    try {
+      await invoke("remove_rag_document", { request: { documentId } });
+      detachRagDocument(documentId);
+      setRagErrorForChat(activeChat.id, null);
+    } catch {
+      setRagErrorForChat(activeChat.id, t("documentDeleteFailed"));
+    }
   }
 
   function updateChatMessages(chatId: string, update: (messages: ChatMessage[]) => ChatMessage[], title?: string) {
@@ -680,6 +766,7 @@ export default function App() {
   }
 
   function deleteChat(chat: ChatSession) {
+    if ((ragBusy && ragBusyChatId === chat.id) || (activeRequest && activeRequestChatId.current === chat.id)) return;
     if (!window.confirm(`${t("confirmDeleteChat")} “${chat.title}”?`)) return;
     const remaining = chats.filter((item) => item.id !== chat.id);
     if (activeChatId === chat.id) {
@@ -695,29 +782,38 @@ export default function App() {
     setChats(remaining);
   }
 
-  function apiContent(message: ChatMessage): string | Array<Record<string, unknown>> {
-    const textAttachments = message.attachments?.filter((attachment) => attachment.kind === "text") ?? [];
-    const imageAttachments = message.attachments?.filter((attachment) => attachment.kind === "image") ?? [];
-    const combinedText = [
-      message.content,
-      ...textAttachments.map((attachment) => `\n\n<attached_file name="${attachment.name}">\n${attachment.content}\n</attached_file>`),
-    ].join("").trim();
-    if (!imageAttachments.length) return combinedText;
-    return [
-      { type: "text", text: combinedText || t("describeImages") },
-      ...imageAttachments.map((attachment) => ({ type: "image_url", image_url: { url: attachment.content } })),
-    ];
+  async function stopGeneration() {
+    if (!activeRequest) return;
+    try {
+      await invoke("cancel_chat", { requestId: activeRequest });
+    } catch {
+      // A search or document lookup may still be finishing; its own result will be shown.
+    }
   }
 
-  async function sendMessage() {
-    const content = draft.trim();
-    if ((!content && !pendingAttachments.length) || activeRequest || status.phase !== "ready" || !activeChat) return;
-    if (pendingAttachments.some((attachment) => attachment.kind === "image") && !projectorPath) {
+  async function retryMessage(assistantId: string) {
+    if (!activeChat || activeRequest) return;
+    const index = activeChat.messages.findIndex((message) => message.id === assistantId);
+    if (index < 1 || index !== activeChat.messages.length - 1) return;
+    const userMessage = activeChat.messages[index - 1];
+    if (userMessage.role !== "user") return;
+    await sendMessage({ userMessage, assistantId });
+  }
+
+  async function sendMessage(retry?: { userMessage: ChatMessage; assistantId: string }) {
+    const content = retry?.userMessage.content ?? draft.trim();
+    const attachments = retry?.userMessage.attachments ?? pendingAttachments;
+    if ((!content && !attachments.length) || activeRequest || ragBusy || status.phase !== "ready" || !activeChat || !historyLoaded) return;
+    if (attachments.some((attachment) => attachment.kind === "image") && !projectorPath) {
       setAttachmentError(t("visionProjectorRequired"));
       return;
     }
     const requestId = crypto.randomUUID();
     const chatId = activeChat.id;
+    const previousMessages = retry
+      ? activeChat.messages.filter((message) => message.id !== retry.userMessage.id && message.id !== retry.assistantId)
+      : activeChat.messages;
+    activeRequestChatId.current = chatId;
     setActiveRequest(requestId);
     setSearchError(null);
     let sources: WebSearchResult[] = [];
@@ -737,38 +833,48 @@ export default function App() {
         });
       } catch (error) {
         setSearchError(localizedSearchError(error));
+        activeRequestChatId.current = null;
         setActiveRequest(null);
         setSearching(false);
         return;
       }
       setSearching(false);
     }
-    const ragContext = content && activeChat.ragDocumentIds?.length
-      ? await (async () => {
-        setRagBusy(true);
-        setRagError(null);
-        try {
-          const hits = await invoke<RagSearchHit[]>("search_rag_documents", {
-            request: {
-              query: content,
-              documentIds: activeChat.ragDocumentIds,
-              limit: 5,
-              maxCharacters: Math.min(9_000, Math.max(3_000, contextSize)),
-            },
-          });
-          return buildRagContext(content, hits, locale);
-        } catch (error) {
-          setRagError(String(error));
-          return null;
-        } finally {
-          setRagBusy(false);
+    let ragContext: ReturnType<typeof buildRagContext> = null;
+    if (content && activeChat.ragDocumentIds?.length) {
+      setRagBusy(true);
+      setRagBusyChatId(chatId);
+      setRagErrorForChat(chatId, null);
+      try {
+        // Character count is only a storage guard. The local tokenizer below
+        // decides whether the full text actually fits the model context.
+        const request = { query: content, documentIds: activeChat.ragDocumentIds, limit: 5, maxCharacters: 9_000 };
+        let hits = await invoke<RagSearchHit[]>("search_rag_documents", { request: { ...request, wholeIfFits: true } });
+        if (!hits.length) throw new Error("No text found");
+        if (hits.some((hit) => hit.fullDocument)) {
+          const candidate = buildRagContext(content, hits, locale);
+          const historyText = previousMessages.slice(-8).map((message) => message.content).join("\n");
+          const tokenCount = await invoke<number>("count_text_tokens", { request: { port, text: `${historyText}\n${content}\n${candidate?.prompt ?? ""}` } }).catch(() => Number.POSITIVE_INFINITY);
+          if (tokenCount > contextSize * 0.6) {
+            hits = await invoke<RagSearchHit[]>("search_rag_documents", { request: { ...request, wholeIfFits: false } });
+          }
         }
-      })()
-      : null;
-    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content, attachments: pendingAttachments };
-    const assistantMessage: ChatMessage = { id: requestId, role: "assistant", content: "", documentSources: ragContext?.sources };
-    const history: Array<{ role: string; content: unknown }> = [...activeChat.messages, userMessage]
-      .map((message) => ({ role: message.role, content: apiContent(message) }));
+        ragContext = buildRagContext(content, hits, locale);
+        if (!ragContext) throw new Error("No text found");
+      } catch {
+        setRagErrorForChat(chatId, t("ragSearchFailed"));
+        activeRequestChatId.current = null;
+        setActiveRequest(null);
+        setRagBusy(false);
+        setRagBusyChatId(null);
+        return;
+      }
+      setRagBusy(false);
+      setRagBusyChatId(null);
+    }
+    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: "user", content, attachments };
+    const assistantMessage: ChatMessage = { id: requestId, role: "assistant", content: "", documentSources: ragContext?.sources, pending: true };
+    const history: Array<{ role: string; content: unknown }> = buildPromptHistory(previousMessages, userMessage, t("describeImages"));
     if (sources.length) {
       history.push({
         role: "user",
@@ -779,41 +885,71 @@ export default function App() {
     if (ragContext) {
       history.push({ role: "user", content: ragContext.prompt });
     }
-    const nextTitle = activeChat.messages.length === 0 && content
+    const nextTitle = previousMessages.length === 0 && content
       ? normalizeChatTitle(content)
       : undefined;
-    updateChatMessages(chatId, (current) => [...current, userMessage, assistantMessage], nextTitle);
-    setDraft("");
-    setPendingAttachments([]);
+    const checkpoint = new Promise<boolean>((resolve) => { saveCheckpoint.current = { requestId, resolve }; });
+    updateChatMessages(chatId, (current) => [
+      ...(retry ? current.filter((message) => message.id !== retry.userMessage.id && message.id !== retry.assistantId) : current),
+      userMessage,
+      assistantMessage,
+    ], nextTitle);
+    if (!retry) {
+      setDraft("");
+      setPendingAttachments([]);
+    }
     setAttachmentError(null);
-    recordDiagnostic("chat", "info", "request_started", `web=${sources.length > 0} rag=${Boolean(ragContext)}`);
-    try {
-      const metrics = await invoke<MessageMetrics | null>("stream_chat", { request: { requestId, port, messages: history } });
-      if (metrics) {
+    if (!await checkpoint) {
+      if (retry) {
+        updateChatMessages(chatId, () => activeChat.messages.map((message) =>
+          message.id === retry.assistantId ? { ...message, error: t("saveFailed") } : message,
+        ));
+      } else {
         updateChatMessages(chatId, (current) => current.map((message) =>
-          message.id === requestId ? { ...message, metrics } : message,
+          message.id === requestId ? { ...message, pending: false, error: t("saveFailed") } : message,
         ));
       }
+      activeRequestChatId.current = null;
+      setActiveRequest(null);
+      return;
+    }
+    recordDiagnostic("chat", "info", "request_started", `web=${sources.length > 0} rag=${Boolean(ragContext)}`);
+    try {
+      const metrics = await invoke<MessageMetrics | null>("stream_chat", { request: { requestId, port, messages: history, allowedRepetitions: boundedRepetitionCount(content) } });
+      updateChatMessages(chatId, (current) => current.map((message) =>
+        message.id === requestId ? { ...message, pending: false, ...(metrics ? { metrics } : {}) } : message,
+      ));
       recordDiagnostic("chat", "info", "request_succeeded", metrics ? `total_tokens=${metrics.totalTokens}` : undefined);
     } catch (error) {
+      const stopped = String(error).includes("CHAT_CANCELLED");
+      const repeated = String(error).includes("CHAT_REPETITION");
       updateChatMessages(chatId, (current) => current.map((message) =>
-          message.id === requestId ? { ...message, content: String(error) } : message,
+        message.id === requestId ? { ...message, pending: false, error: stopped ? t("answerStopped") : repeated ? t("answerRepetition") : t("answerFailed"), stopped } : message,
       ));
       recordDiagnostic("chat", "error", "request_failed");
     } finally {
+      activeRequestChatId.current = null;
       setActiveRequest(null);
     }
   }
 
   const phaseLabel = status.phase === "ready" ? t("ready") : status.phase === "starting" ? t("starting") : status.phase === "stopping" ? t("stopping") : status.phase === "error" ? t("error") : t("stopped");
-  const canStart = runtimePath && modelPath && status.phase !== "starting" && status.phase !== "ready";
+  const modelConfigured = Boolean(runtimePath && modelPath);
+  const canStart = modelConfigured && status.phase !== "starting" && status.phase !== "stopping" && status.phase !== "ready";
+  const emptyChatTitle = status.phase === "ready" ? t("chatWelcome")
+    : !modelConfigured ? t("chooseModelFirst")
+      : status.phase === "starting" ? t("starting")
+        : status.phase === "stopping" ? t("stopping") : t("startModelFirst");
   const recommendedModel = useMemo(() => {
     if (!catalog?.models.length) return null;
     const memory = systemInfo?.memoryBytes ?? 0;
     return [...catalog.models]
       .filter((model) => memory >= model.estimatedMemoryBytes)
-      .sort((a, b) => b.estimatedMemoryBytes - a.estimatedMemoryBytes || b.sizeBytes - a.sizeBytes)[0] ?? catalog.models[0];
+      .sort((a, b) => a.estimatedMemoryBytes - b.estimatedMemoryBytes || a.sizeBytes - b.sizeBytes)[0] ?? catalog.models[0];
   }, [catalog, systemInfo]);
+  const selectedManagedModel = catalog?.models.find((model) => model.installedPath && model.installedPath === modelPath);
+  const customModelSelected = Boolean(modelPath && !selectedManagedModel);
+  const quickStartModel = selectedManagedModel ?? recommendedModel;
 
   return (
     <main className="app-shell">
@@ -850,11 +986,12 @@ export default function App() {
               <button className={view === "chat" && activeChatId === chat.id ? "active" : ""} title={chat.title} onClick={() => { setActiveChatId(chat.id); setView("chat"); }}>{chat.title}</button>
               <div className="chat-actions">
                 <button aria-label={`${t("renameChat")}: ${chat.title}`} title={t("renameChat")} onClick={() => startRenamingChat(chat)}>✎</button>
-                <button aria-label={`${t("deleteChat")}: ${chat.title}`} title={t("deleteChat")} onClick={() => deleteChat(chat)} disabled={Boolean(activeRequest && activeChatId === chat.id)}>×</button>
+                <button aria-label={`${t("deleteChat")}: ${chat.title}`} title={t("deleteChat")} onClick={() => deleteChat(chat)} disabled={Boolean((activeRequest && activeRequestChatId.current === chat.id) || (ragBusy && ragBusyChatId === chat.id))}>×</button>
               </div>
             </div>)}</div>
         </div>
         <div className="sidebar-footer">
+          <div className={`save-state ${saveState}`} role="status" aria-live="polite">{saveState === "saving" ? t("savingChats") : saveState === "error" ? <><span>{t("saveFailed")}</span><button onClick={() => { setSaveState("saving"); if (historyLoadFailed) void initializeChats(); else void saveQueue.current(chats).then(() => setSaveState("saved")).catch(() => setSaveState("error")); }}>{historyLoadFailed ? t("retryLoad") : t("retrySave")}</button></> : t("savedChats")}</div>
           <div className="privacy"><span className="privacy-dot" />{webSearchEnabled ? t("privacyWithSearch").replace("{provider}", searchProviderName) : t("privacy")}</div>
           <div className="locale-switch" aria-label="Language">{(["ru", "en"] as const).map((item) => <button className={locale === item ? "active" : ""} onClick={() => setLocale(item)} key={item}>{item.toUpperCase()}</button>)}</div>
           <ExternalLink href="https://zakharov.asia/ru/">{t("developedBy")} <ExternalIcon /></ExternalLink>
@@ -862,23 +999,53 @@ export default function App() {
       </aside>
       <section className={`main-pane ${isDraggingFiles ? "drop-active" : ""}`}>
         {isDraggingFiles && <div className="drop-overlay" role="status" aria-live="polite"><FileIcon /><strong>{t("dropFiles")}</strong><span>{t("dropFilesHint")}</span></div>}
-        {view === "chat" && <>
+        {view === "chat" && <div className="chat-view">
           <header className="pane-bar"><button className="model-picker" onClick={() => setView("models")}><Logo small /><span><small>{t("localModel")}</small>{status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))}</span><ChevronIcon /></button>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer}>{t("stopModel")}</button>}</div></details></header>
           <div className={`conversation ${messages.length === 0 ? "is-empty" : ""}`}>
-            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{status.phase === "ready" ? t("chatWelcome") : t("chooseModelFirst")}</h1>{status.phase !== "ready" && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => {
+            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{emptyChatTitle}</h1>{canStart ? <button onClick={() => void startServer()}>{t("start")}</button> : !modelConfigured && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => {
               const sources = ephemeralSources[message.id] ?? message.sources;
-              return <article className={`message ${message.role}`} key={message.id}><div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div><div className="message-body"><div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>{message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}{message.role === "assistant" ? message.content ? <MarkdownMessage>{message.content}</MarkdownMessage> : activeRequest === message.id ? <GeneratingIndicator label={t("generating")} /> : null : <div className="plain-message">{message.content}</div>}{sources?.length ? <div className="sources"><small>{t("sources")}</small>{sources.map((source, index) => <ExternalLink href={source.url} key={`${message.id}-${index}-${source.url}`}>{index + 1}. {source.title}{source.age ? ` · ${source.age}` : ""}</ExternalLink>)}<em>{t("sourcesSessionOnly")}</em></div> : null}{message.documentSources?.length ? <div className="document-sources"><small>{t("documentSources")}</small>{message.documentSources.map((source) => <span key={`${source.documentId}-${source.chunkId}`} title={source.excerpt}>[{source.label}] {source.documentName} · {t("fragment")} {source.ordinal}</span>)}</div> : null}{message.role === "assistant" && message.metrics && <div className="message-metrics" title={`${t("promptTokens")}: ${formatCount(message.metrics.promptTokens, locale)} · ${t("totalTokens")}: ${formatCount(message.metrics.totalTokens, locale)}`}>{formatCount(message.metrics.completionTokens, locale)} {t("outputTokensUnit")} · {formatSpeed(message.metrics.tokensPerSecond, locale)} {t("tokensPerSecond")} · {formatDuration(message.metrics.elapsedMs, locale)}</div>}</div></article>;
+              return <article className={`message ${message.role}`} key={message.id}>
+                <div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div>
+                <div className="message-body">
+                  <div className="message-role">{message.role === "user" ? t("you") : t("assistant")}</div>
+                  {message.attachments?.length ? <div className="message-attachments">{message.attachments.map((attachment) => attachment.kind === "image" ? <img key={attachment.id} src={attachment.content} alt={attachment.name} /> : <span key={attachment.id}>{attachment.name}</span>)}</div> : null}
+                  {message.role === "assistant" ? message.content ? <MarkdownMessage>{message.content}</MarkdownMessage> : activeRequest === message.id ? <GeneratingIndicator label={t("generating")} /> : null : <div className="plain-message">{message.content}</div>}
+                  {message.error && <div className="message-error" role="alert"><span>{message.error}</span>{messages.at(-1)?.id === message.id && status.phase === "ready" && <button onClick={() => void retryMessage(message.id)}>{t("retryAnswer")}</button>}</div>}
+                  {sources?.length ? <div className="sources"><small>{t("sources")}</small>{sources.map((source, index) => <ExternalLink href={source.url} key={`${message.id}-${index}-${source.url}`}>{index + 1}. {source.title}{source.age ? ` · ${source.age}` : ""}</ExternalLink>)}<em>{t("sourcesSessionOnly")}</em></div> : null}
+                  {message.documentSources?.length ? <div className="document-sources"><small>{t("documentSources")}</small>{groupDocumentSources(message.documentSources).map((group) => <details className="document-source" key={group.documentId}><summary>[{group.labels.join(", ")}] {group.documentName} · {group.fullDocument ? t("ragWhole") : t("ragSelected")}</summary><div>{group.sources.map((source) => <p key={source.chunkId}>{!source.fullDocument && `${t("fragment")} ${source.ordinal}: `}{source.excerpt}</p>)}</div></details>)}</div> : null}
+                  {message.role === "assistant" && message.metrics && <div className="message-metrics" title={`${t("promptTokens")}: ${formatCount(message.metrics.promptTokens, locale)} · ${t("totalTokens")}: ${formatCount(message.metrics.totalTokens, locale)}`}>{formatCount(message.metrics.completionTokens, locale)} {t("outputTokensUnit")} · {formatSpeed(message.metrics.tokensPerSecond, locale)} {t("tokensPerSecond")} · {formatDuration(message.metrics.elapsedMs, locale)}</div>}
+                </div>
+              </article>;
             })}
           </div>
-          <div className="composer-wrap">{ragDocuments.length ? <details className="rag-documents"><summary>{t("ragReady").replace("{count}", String(ragDocuments.length))}</summary><div>{ragDocuments.map((document) => <span key={document.id}><span><strong>{document.name}</strong><small>{document.chunkCount} {t("fragments")}</small></span><button onClick={() => detachRagDocument(document.id)} aria-label={`${t("detachRagDocument")}: ${document.name}`}>×</button></span>)}</div></details> : null}{pendingAttachments.length ? <div className="pending-attachments">{pendingAttachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? <img src={attachment.content} alt="" /> : <FileIcon />}<span>{attachment.name}</span><button onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))} aria-label={t("removeAttachment")}>×</button></span>)}</div> : null}{(attachmentError || ragError || searchError) && <div className="composer-error">{searchError || attachmentError || ragError}</div>}<div className="composer"><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={t("placeholder")} disabled={status.phase !== "ready" || Boolean(activeRequest)} rows={2} /><div className="composer-actions"><button className="tool-button" onClick={chooseAttachments} disabled={status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /></button><button className="tool-button rag-button" onClick={chooseRagDocuments} disabled={Boolean(activeRequest) || ragBusy || (activeChat?.ragDocumentIds?.length ?? 0) >= 12} aria-label={t("addRagDocuments")} title={t("addRagDocuments")}><KnowledgeIcon /></button><button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={toggleWebSearch} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} aria-label={t("webSearch")} title={t("webSearch")}><GlobeIcon /></button><button className="send-button" onClick={sendMessage} disabled={(!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching || ragBusy} aria-label={t("send")}><SendIcon /></button></div></div>{ragBusy && <div className="rag-disclosure">{t("ragIndexing")}</div>}{webSearchEnabled && <div className="search-disclosure">{searching ? t("searchingWeb").replace("{provider}", searchProviderName) : t("webSearchDisclosure").replace("{provider}", searchProviderName)}</div>}</div>
-        </>}
+          <div className="composer-wrap">
+            {ragDocuments.length ? <details className="rag-documents"><summary>{t("ragReady").replace("{count}", String(ragDocuments.length))}</summary><div>{ragDocuments.map((document) => <div className="rag-document-row" key={document.id}><strong>{document.name}</strong><button disabled={Boolean(activeRequest)} onClick={() => detachRagDocument(document.id)} aria-label={`${t("detachRagDocument")}: ${document.name}`}>{t("detachRagDocument")}</button><button className="danger" disabled={Boolean(activeRequest)} onClick={() => void deleteRagDocument(document.id)} aria-label={`${t("deleteLocalDocument")}: ${document.name}`}>{t("deleteLocalDocument")}</button></div>)}</div></details> : null}
+            {pendingFileChoicePaths.length ? <div className="file-choice" role="status"><span>{t("dropScopeQuestion")}</span><button disabled={status.phase !== "ready" || ragBusy} onClick={() => { void addAttachmentsFromPaths(pendingFileChoicePaths); setPendingFileChoice(null); }}>{t("toMessage")}</button><button disabled={ragBusy} onClick={() => { void importRagDocuments(pendingFileChoicePaths); setPendingFileChoice(null); }}>{t("toChat")}</button><button onClick={() => setPendingFileChoice(null)}>{t("cancel")}</button></div> : null}
+            {pendingAttachments.length ? <div className="pending-attachments">{pendingAttachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? <img src={attachment.content} alt="" /> : <FileIcon />}<span>{attachment.name}</span><button onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))} aria-label={t("removeAttachment")}>×</button></span>)}</div> : null}
+            {(attachmentError || ragError || searchError) && <div className="composer-error" role="alert"><span>{searchError || attachmentError || ragError}</span>{(ragError || searchError) && (draft.trim() || pendingAttachments.length) && status.phase === "ready" && !activeRequest && <button onClick={() => void sendMessage()}>{t("retryRequest")}</button>}</div>}
+            <div className="composer">
+              <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={t("placeholder")} disabled={!historyLoaded || status.phase !== "ready" || Boolean(activeRequest)} rows={2} />
+              <div className="composer-actions">
+                <button className="tool-button" onClick={chooseAttachments} disabled={!historyLoaded || status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /><span>{t("toMessage")}</span></button>
+                <button className="tool-button rag-button" onClick={chooseRagDocuments} disabled={!historyLoaded || Boolean(activeRequest) || ragBusy || (activeChat?.ragDocumentIds?.length ?? 0) >= 12} aria-label={t("addRagDocuments")} title={t("addRagDocuments")}><KnowledgeIcon /><span>{t("addRagDocuments")}</span></button>
+                <button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={toggleWebSearch} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} aria-label={t("webSearch")} title={t("webSearch")}><GlobeIcon /><span>{t("webSearch")}</span></button>
+                {activeRequest && !searching && !ragBusy ? <button className="send-button stop-answer" onClick={() => void stopGeneration()} aria-label={t("stopAnswer")}>{t("stop")}</button> : <button className="send-button" onClick={() => void sendMessage()} disabled={!historyLoaded || (!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching || ragBusy} aria-label={t("send")}><SendIcon /></button>}
+              </div>
+            </div>
+            {ragBusy && ragBusyChatId === activeChatId && <div className="rag-disclosure" role="status">{t("ragIndexing")}</div>}
+            {webSearchEnabled && <div className="search-disclosure" role="status">{searching ? t("searchingWeb").replace("{provider}", searchProviderName) : t("webSearchDisclosure").replace("{provider}", searchProviderName)}</div>}
+            <div className="composer-footnote">{t("chatContextNotice")}</div>
+          </div>
+        </div>}
         {view === "models" && <div className="content-page">
           <header className="page-heading"><div><h1>{t("modelsTitle")}</h1><p>{t("modelsDescription")}</p></div><div className={`status ${status.phase}`}><i /><span>{phaseLabel}</span></div></header>
           <div className="system-strip"><div><small>{t("system")}</small><strong>{systemInfo?.chip ?? "—"}</strong><span>{systemInfo?.architecture ?? "—"} · macOS {systemInfo?.macosVersion ?? "—"}</span></div><div><small>{t("memory")}</small><strong>{formatBytes(systemInfo?.memoryBytes ?? 0, locale)}</strong></div><div><small>{t("disk")}</small><strong>{formatBytes(systemInfo?.freeDiskBytes ?? 0, locale)}</strong></div></div>
+          {customModelSelected ? <section className="quick-start"><div><h2>{t("advancedSetup")}</h2><strong>{fileName(modelPath)}</strong><small>{t("manualNote")}</small></div><div className="quick-start-actions">{status.phase === "ready" ? <button className="primary" onClick={() => setView("chat")}>{t("openChat")}</button> : <button className="primary" disabled={!canStart} onClick={() => void startServer()}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div></section> : quickStartModel && <section className="quick-start"><div><h2>{t("firstRunTitle")}</h2><p>{t("firstRunDesc")}</p><strong>{quickStartModel.name}</strong><small>{t("catalogDescription")}</small></div><div className="quick-start-actions">{status.phase === "ready" ? <button className="primary" onClick={() => setView("chat")}>{t("openChat")}</button> : !quickStartModel.installed ? <button className="primary" disabled={Boolean(activeDownload)} onClick={() => void installManagedModel(quickStartModel)}>{downloadProgress[quickStartModel.id]?.phase === "paused" ? t("resume") : t("install")}</button> : modelPath !== quickStartModel.installedPath ? <button className="primary" onClick={() => useManagedModel(quickStartModel)}>{t("useModel")}</button> : <button className="primary" disabled={!canStart} onClick={() => void startServer()}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div></section>}
+          {!customModelSelected && quickStartModel && activeDownload === quickStartModel.id && <div className="quick-progress" role="status"><span>{t("downloading")} {downloadProgress[quickStartModel.id]?.totalBytes ? Math.round((downloadProgress[quickStartModel.id].downloadedBytes / downloadProgress[quickStartModel.id].totalBytes) * 100) : 0}%</span><progress max="100" value={downloadProgress[quickStartModel.id]?.totalBytes ? (downloadProgress[quickStartModel.id].downloadedBytes / downloadProgress[quickStartModel.id].totalBytes) * 100 : 0} /><button onClick={() => void pauseDownload(quickStartModel.id)}>{t("pause")}</button><button onClick={() => void cancelDownload(quickStartModel.id)}>{t("cancel")}</button></div>}
           <section className="endpoint-card"><div><small>{t("openAiEndpoint")}</small><strong>http://127.0.0.1:{port}/v1</strong><p>{status.phase === "ready" ? t("endpointReady") : t("endpointStartsWithModel")}</p></div><div><span className={`endpoint-state ${status.phase === "ready" ? "ready" : ""}`}>{status.phase === "ready" ? t("available") : t("offline")}</span><button className="quiet" onClick={copyEndpoint}>{endpointCopied ? t("endpointCopied") : t("copyEndpoint")}</button></div></section>
           <section className="catalog-section">
             <div className="section-heading"><div><h2>{t("catalogTitle")}</h2><p>{t("catalogDescription")}</p></div>{catalog && <span className={`runtime-pill ${catalog.runtimeInstalled ? "ready" : ""}`}>{catalog.runtimeInstalled ? t("runtimeIncluded") : t("runtimeMissing")}</span>}</div>
-            <div className="model-grid">{catalog?.models.map((model) => {
+            <details className="other-models"><summary>{t("otherModels")}</summary><div className="model-grid">{catalog?.models.filter((model) => model.id !== quickStartModel?.id).map((model) => {
               const isActive = activeDownload === model.id || activeDownload === `${model.id}-vision`;
               const progress = downloadProgress[activeDownload === `${model.id}-vision` ? `${model.id}-vision` : model.id];
               const percent = progress?.totalBytes ? Math.min(100, Math.round(progress.downloadedBytes / progress.totalBytes * 100)) : 0;
@@ -890,11 +1057,11 @@ export default function App() {
                 {isActive && progress && <div className="download-state"><div><span>{progress.phase === "verifying" ? t("verifying") : t("downloading")}</span><strong>{percent}%</strong></div><progress max="100" value={percent} /></div>}
                 <div className="model-actions">{isActive ? <><button className="quiet" onClick={() => activeDownload && pauseDownload(activeDownload)}>{t("pause")}</button><button className="quiet danger" onClick={() => activeDownload && cancelDownload(activeDownload)}>{t("cancel")}</button></> : model.installed ? <>{model.visionCapable && !model.projectorInstalled && <button className="quiet install" onClick={() => installManagedProjector(model)}>{t("installVision")}</button>}<button className="quiet" onClick={() => useManagedModel(model)} disabled={selected}>{selected ? t("selected") : t("useModel")}</button><button className="quiet danger" onClick={() => removeManagedModel(model)} disabled={status.phase === "ready" || selected}>{t("remove")}</button></> : <button className="quiet install" onClick={() => installManagedModel(model)} disabled={Boolean(activeDownload)}>{progress?.phase === "paused" ? t("resume") : t("install")}</button>}</div>
               </article>;
-            })}</div>
+            })}</div></details>
             {installError && <p className="status-detail">{installError}</p>}
           </section>
           <details className="manual-setup"><summary>{t("advancedSetup")}</summary><section className="settings-form"><FileField label={t("runtime")} value={runtimePath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("runtime")} /><FileField label={t("model")} value={modelPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("model")} /><FileField label={t("projector")} value={projectorPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("projector")} /><div className="field-row"><label>{t("context")}<select value={contextSize} onChange={(event) => setContextSize(Number(event.target.value))} disabled={status.phase === "ready"}><option value={4096}>4K</option><option value={8192}>8K</option><option value={16384}>16K</option><option value={32768}>32K</option></select></label><label>{t("port")}<input type="number" min={1024} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} disabled={status.phase === "ready"} /></label></div><div className="compatibility-note"><strong>{t("compatibleNote")}</strong><span>{t("manualNote")}</span></div></section></details>
-          {status.detail && <p className="status-detail model-status">{status.detail}</p>}<div className="form-actions model-start">{status.phase === "ready" || status.phase === "stopping" ? <button className="primary stop" onClick={stopServer} disabled={status.phase === "stopping"}>{t("stop")}</button> : <button className="primary" onClick={startServer} disabled={!canStart}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div>
+          {status.detail && <p className="status-detail model-status">{status.detail}</p>}{(status.phase === "ready" || status.phase === "stopping") && <div className="form-actions model-start"><button className="primary stop" onClick={stopServer} disabled={status.phase === "stopping"}>{t("stop")}</button></div>}
         </div>}
         {view === "diagnostics" && <div className="content-page narrow">
           <header className="page-heading"><div><h1>{t("diagnostics")}</h1><p>{t("debugPrivacy")}</p></div><button className="primary" onClick={copyDiagnosticReport}>{reportCopied ? t("reportCopied") : t("copyReport")}</button></header>

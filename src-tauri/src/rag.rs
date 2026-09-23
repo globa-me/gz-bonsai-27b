@@ -30,11 +30,18 @@ pub struct ListRagDocumentsRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RemoveRagDocumentRequest {
+    document_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchRagDocumentsRequest {
     query: String,
     document_ids: Vec<String>,
     limit: Option<usize>,
     max_characters: Option<usize>,
+    whole_if_fits: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -57,6 +64,8 @@ pub struct RagSearchHit {
     text: String,
     excerpt: String,
     score: f64,
+    chunk_count: usize,
+    full_document: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -74,6 +83,39 @@ struct StoredRagDocument {
     mime: String,
     size: u64,
     chunks: Vec<RagChunk>,
+    #[serde(default)]
+    full_text: Option<String>,
+}
+
+impl StoredRagDocument {
+    fn text(&self) -> String {
+        self.full_text
+            .clone()
+            .unwrap_or_else(|| stitch_chunks(&self.chunks))
+    }
+}
+
+// Version 1 indexes stored only overlapping chunks. Rebuild their readable text
+// without repeating the shared boundary; new indexes retain the exact text.
+fn stitch_chunks(chunks: &[RagChunk]) -> String {
+    let mut result = String::new();
+    for chunk in chunks {
+        if result.is_empty() {
+            result.push_str(&chunk.text);
+            continue;
+        }
+        let previous = result.chars().collect::<Vec<_>>();
+        let next = chunk.text.chars().collect::<Vec<_>>();
+        let overlap = (1..=previous.len().min(next.len()).min(CHUNK_OVERLAP))
+            .rev()
+            .find(|length| previous[previous.len() - length..] == next[..*length])
+            .unwrap_or(0);
+        if overlap == 0 && !result.ends_with(char::is_whitespace) {
+            result.push(' ');
+        }
+        result.extend(next[overlap..].iter());
+    }
+    result
 }
 
 impl StoredRagDocument {
@@ -269,6 +311,141 @@ fn excerpt(value: &str) -> String {
     normalized.chars().take(260).collect()
 }
 
+fn full_document_hits(
+    documents: &[StoredRagDocument],
+    limit: usize,
+    max_characters: usize,
+) -> Option<Vec<RagSearchHit>> {
+    let texts = documents
+        .iter()
+        .map(StoredRagDocument::text)
+        .collect::<Vec<_>>();
+    let total = texts.iter().map(|text| text.chars().count()).sum::<usize>();
+    if total > max_characters || documents.len() > limit {
+        return None;
+    }
+    Some(
+        documents
+            .iter()
+            .zip(texts)
+            .map(|(document, text)| RagSearchHit {
+                document_id: document.id.clone(),
+                document_name: document.name.clone(),
+                chunk_id: "full-document".into(),
+                ordinal: 0,
+                excerpt: excerpt(&text),
+                text,
+                score: 0.0,
+                chunk_count: document.chunks.len(),
+                full_document: true,
+            })
+            .collect(),
+    )
+}
+
+fn chunk_hit(document: &StoredRagDocument, chunk: &RagChunk, score: f64) -> RagSearchHit {
+    RagSearchHit {
+        document_id: document.id.clone(),
+        document_name: document.name.clone(),
+        chunk_id: chunk.id.clone(),
+        ordinal: chunk.ordinal,
+        text: chunk.text.clone(),
+        excerpt: excerpt(&chunk.text),
+        score,
+        chunk_count: document.chunks.len(),
+        full_document: false,
+    }
+}
+
+fn edge_window(text: &str, from_end: bool, characters: usize) -> String {
+    if from_end {
+        text.chars()
+            .rev()
+            .take(characters)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    } else {
+        text.chars().take(characters).collect()
+    }
+}
+
+fn coverage_hits(
+    query: &str,
+    document: &StoredRagDocument,
+    limit: usize,
+    max_characters: usize,
+) -> Option<Vec<RagSearchHit>> {
+    let words = tokenize(query);
+    let start = words.iter().any(|word| {
+        word.starts_with("начал")
+            || word.starts_with("перв")
+            || matches!(word.as_str(), "first" | "beginning" | "start" | "opening")
+    });
+    let end = words.iter().any(|word| {
+        word.starts_with("конц")
+            || word.starts_with("послед")
+            || matches!(
+                word.as_str(),
+                "last" | "end" | "ending" | "final" | "closing"
+            )
+    });
+    let document_question = words.iter().any(|word| {
+        word.starts_with("документ")
+            || word.starts_with("файл")
+            || matches!(word.as_str(), "pdf" | "document" | "file")
+    });
+    let whole = document_question
+        && words.iter().any(|word| {
+            word.starts_with("весь")
+                || word.starts_with("целик")
+                || word.starts_with("полност")
+                || word.starts_with("суммир")
+                || matches!(word.as_str(), "whole" | "entire" | "summarize" | "summary")
+        });
+    if !((start && end) || whole) || document.chunks.is_empty() {
+        return None;
+    }
+
+    let last = document.chunks.len() - 1;
+    let mut priorities = vec![0];
+    if last > 0 {
+        priorities.push(last);
+    }
+    if whole && limit > priorities.len() {
+        let count = limit.min(document.chunks.len());
+        for position in 0..count {
+            let index = position * last / (count - 1).max(1);
+            if !priorities.contains(&index) {
+                priorities.push(index);
+            }
+        }
+    }
+
+    let mut used = 0;
+    let mut hits = Vec::new();
+    for index in priorities {
+        if hits.len() >= limit {
+            break;
+        }
+        let chunk = &document.chunks[index];
+        let mut hit = chunk_hit(document, chunk, 0.0);
+        if !whole && last > 0 {
+            hit.text = edge_window(&chunk.text, index == last, 640);
+            hit.excerpt = hit.text.clone();
+        }
+        let length = hit.text.chars().count();
+        if !hits.is_empty() && used + length > max_characters {
+            continue;
+        }
+        used += length;
+        hits.push(hit);
+    }
+    hits.sort_by_key(|hit| hit.ordinal);
+    Some(hits)
+}
+
 async fn load_document(root: &Path, id: &str) -> Result<StoredRagDocument, String> {
     let path = document_path(root, id)?;
     let bytes = tokio::fs::read(path)
@@ -328,12 +505,13 @@ pub async fn import_rag_document(
     }
     let chunks = chunk_text(&text);
     let document = StoredRagDocument {
-        schema_version: 1,
+        schema_version: 2,
         id: id.clone(),
         name,
         mime: mime.into(),
         size: metadata.len(),
         chunks,
+        full_text: Some(text),
     };
     let encoded = serde_json::to_vec(&document)
         .map_err(|error| format!("Could not encode RAG index: {error}"))?;
@@ -369,6 +547,19 @@ pub async fn list_rag_documents(
 }
 
 #[tauri::command]
+pub async fn remove_rag_document(
+    app: AppHandle,
+    request: RemoveRagDocumentRequest,
+) -> Result<(), String> {
+    let path = document_path(&rag_root(&app)?, &request.document_id)?;
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not delete local document: {error}")),
+    }
+}
+
+#[tauri::command]
 pub async fn search_rag_documents(
     app: AppHandle,
     request: SearchRagDocumentsRequest,
@@ -391,6 +582,16 @@ pub async fn search_rag_documents(
     let mut documents = Vec::new();
     for id in request.document_ids {
         documents.push(load_document(&root, &id).await?);
+    }
+    if request.whole_if_fits.unwrap_or(true) {
+        if let Some(hits) = full_document_hits(&documents, limit, max_characters) {
+            return Ok(hits);
+        }
+    }
+    if documents.len() == 1 {
+        if let Some(hits) = coverage_hits(query, &documents[0], limit, max_characters) {
+            return Ok(hits);
+        }
     }
     let query_tokens = tokenize(query);
     let chunks = documents
@@ -463,15 +664,7 @@ pub async fn search_rag_documents(
             continue;
         }
         used_characters += length;
-        hits.push(RagSearchHit {
-            document_id: document.id.clone(),
-            document_name: document.name.clone(),
-            chunk_id: chunk.id.clone(),
-            ordinal: chunk.ordinal,
-            text: chunk.text.clone(),
-            excerpt: excerpt(&chunk.text),
-            score,
-        });
+        hits.push(chunk_hit(document, chunk, score));
     }
     Ok(hits)
 }
@@ -489,6 +682,92 @@ mod tests {
         assert!(chunks.len() > 2);
         assert!(chunks.iter().all(|chunk| !chunk.text.is_empty()));
         assert_eq!(chunks[0].ordinal, 1);
+    }
+
+    #[test]
+    fn version_one_chunks_can_be_read_without_duplicate_overlap() {
+        let text = "Первый абзац с фактами. ".repeat(150);
+        let chunks = chunk_text(&text);
+        let stitched = stitch_chunks(&chunks);
+        assert!(chunks.len() > 2);
+        assert_eq!(stitched, text.trim());
+    }
+
+    #[test]
+    fn four_chunk_document_is_sent_as_one_when_it_fits() {
+        let text = "Предложение с данными. ".repeat(170);
+        let document = StoredRagDocument {
+            schema_version: 2,
+            id: "a".into(),
+            name: "guide.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 1024,
+            chunks: chunk_text(&text),
+            full_text: Some(text.clone()),
+        };
+        assert!(document.chunks.len() >= 3);
+        let hits = full_document_hits(std::slice::from_ref(&document), 5, 9_000).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].full_document);
+        assert_eq!(hits[0].text, text);
+        assert!(full_document_hits(&[document], 5, 3_000).is_none());
+    }
+
+    #[test]
+    fn boundary_question_keeps_both_ends_when_full_text_does_not_fit() {
+        let text = format!(
+            "TOPAZ-311 begins the file. {} OPAL-722 ends the file.",
+            "Long local document with repeated neutral details. ".repeat(250)
+        );
+        let document = StoredRagDocument {
+            schema_version: 2,
+            id: "a".into(),
+            name: "guide.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 1024,
+            chunks: chunk_text(&text),
+            full_text: Some(text),
+        };
+        let hits =
+            coverage_hits("Назови маркеры в начале и конце PDF", &document, 5, 9_000).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].ordinal, 1);
+        assert_eq!(hits[1].ordinal, document.chunks.len());
+        assert!(hits[0].text.contains("TOPAZ-311"));
+        assert!(hits[1].text.contains("OPAL-722"));
+        assert!(hits.iter().all(|hit| hit.text.chars().count() <= 640));
+        let english = coverage_hits(
+            "What are the opening and closing markers of the document?",
+            &document,
+            5,
+            9_000,
+        )
+        .unwrap();
+        assert_eq!(
+            english.iter().map(|hit| hit.ordinal).collect::<Vec<_>>(),
+            vec![1, document.chunks.len()]
+        );
+    }
+
+    #[test]
+    fn whole_document_question_samples_middle_and_both_ends() {
+        let text = "Long local document with repeated neutral details. ".repeat(250);
+        let document = StoredRagDocument {
+            schema_version: 2,
+            id: "a".into(),
+            name: "guide.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 1024,
+            chunks: chunk_text(&text),
+            full_text: Some(text),
+        };
+        let hits = coverage_hits("Summarize the whole document", &document, 5, 9_000).unwrap();
+        assert_eq!(hits.len(), 5);
+        assert_eq!(hits.first().unwrap().ordinal, 1);
+        assert_eq!(hits.last().unwrap().ordinal, document.chunks.len());
+        assert!(hits
+            .iter()
+            .any(|hit| hit.ordinal > 1 && hit.ordinal < document.chunks.len()));
     }
 
     #[test]

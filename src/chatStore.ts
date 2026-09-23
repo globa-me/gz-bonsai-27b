@@ -26,6 +26,9 @@ export interface ChatMessage {
   sources?: SearchSource[];
   documentSources?: DocumentSource[];
   metrics?: MessageMetrics;
+  error?: string;
+  stopped?: boolean;
+  pending?: boolean;
 }
 
 export interface ChatSession {
@@ -100,6 +103,15 @@ export function restoreAutoChatTitle(chat: ChatSession): ChatSession {
   const firstPrompt = chat.messages.find((message) => message.role === "user")?.content;
   const title = firstPrompt ? normalizeChatTitle(firstPrompt) : "";
   return title && title !== chat.title ? { ...chat, title, titleSource: "auto" } : chat;
+}
+
+export function restoreInterruptedAnswers(chat: ChatSession, error: string): ChatSession {
+  return {
+    ...chat,
+    messages: chat.messages.map((message) => message.role === "assistant" && message.pending
+      ? { ...message, pending: false, error }
+      : message),
+  };
 }
 
 export function renameChatSession(chat: ChatSession, value: string): ChatSession {

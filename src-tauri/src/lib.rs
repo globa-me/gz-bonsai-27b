@@ -7,16 +7,18 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
+    collections::{HashMap, HashSet},
+    io::Write,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener},
     path::{Path, PathBuf},
-    process::{Command as StdCommand, Stdio},
+    process::{Child as StdChild, Command as StdCommand, Stdio},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::{Child, Command},
-    sync::Mutex,
+    sync::{watch, Mutex},
 };
 
 const HOST: &str = "127.0.0.1";
@@ -25,12 +27,27 @@ const HEALTH_ATTEMPTS: usize = 180;
 #[derive(Default)]
 struct ManagedServer {
     child: Option<Child>,
+    watchdog: Option<StdChild>,
     status: ServerStatus,
 }
 
 struct AppState {
     server: Mutex<ManagedServer>,
     client: reqwest::Client,
+    chat_requests: Mutex<ChatRequests>,
+}
+
+#[derive(Default)]
+struct ChatRequests {
+    active: HashMap<String, watch::Sender<bool>>,
+    pending_cancel: HashSet<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TokenizeRequest {
+    port: u16,
+    text: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -79,6 +96,8 @@ struct ChatRequest {
     request_id: String,
     port: u16,
     messages: Vec<ChatMessage>,
+    #[serde(default)]
+    allowed_repetitions: Option<u16>,
 }
 
 #[derive(Clone, Serialize)]
@@ -317,6 +336,39 @@ where
     });
 }
 
+fn spawn_server_watchdog(server_pid: u32) -> Result<Option<StdChild>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        // The pipe closes even on SIGKILL. A separate process then stops the
+        // server, which cannot observe the Tauri Exit event in that case.
+        let child = StdCommand::new("/bin/sh")
+            .arg("-c")
+            .arg("IFS= read -r status || /bin/kill -TERM \"$1\" 2>/dev/null")
+            .arg("bonsai-server-watchdog")
+            .arg(server_pid.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Could not start server watchdog: {error}"))?;
+        Ok(Some(child))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = server_pid;
+        Ok(None)
+    }
+}
+
+fn disarm_server_watchdog(managed: &mut ManagedServer) {
+    if let Some(mut watchdog) = managed.watchdog.take() {
+        if let Some(mut stdin) = watchdog.stdin.take() {
+            let _ = stdin.write_all(b"done\n");
+        }
+        let _ = watchdog.wait();
+    }
+}
+
 #[tauri::command]
 async fn start_server(
     app: AppHandle,
@@ -334,6 +386,7 @@ async fn start_server(
             return Err("A server process is already running".into());
         }
         managed.child = None;
+        disarm_server_watchdog(&mut managed);
     }
     let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.port);
     TcpListener::bind(address)
@@ -395,6 +448,19 @@ async fn start_server(
     let mut child = command
         .spawn()
         .map_err(|error| format!("Could not start llama-server: {error}"))?;
+    let watchdog = match child.id().map(spawn_server_watchdog) {
+        Some(Ok(watchdog)) => watchdog,
+        Some(Err(error)) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error);
+        }
+        None => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err("Could not determine llama-server process id".into());
+        }
+    };
     if let Some(stdout) = child.stdout.take() {
         pipe_logs(app.clone(), stdout, "server");
     }
@@ -402,6 +468,7 @@ async fn start_server(
         pipe_logs(app.clone(), stderr, "server");
     }
     managed.child = Some(child);
+    managed.watchdog = watchdog;
     drop(managed);
 
     let health_url = format!("http://{HOST}:{}/health", config.port);
@@ -412,6 +479,7 @@ async fn start_server(
             if let Some(child) = managed.child.as_mut() {
                 if let Some(exit) = child.try_wait().map_err(|error| error.to_string())? {
                     managed.child = None;
+                    disarm_server_watchdog(&mut managed);
                     managed.status = ServerStatus {
                         phase: ServerPhase::Error,
                         port: config.port,
@@ -465,6 +533,7 @@ async fn start_server(
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
+    disarm_server_watchdog(&mut managed);
     managed.status = ServerStatus {
         phase: ServerPhase::Error,
         port: config.port,
@@ -493,6 +562,7 @@ async fn stop_server(app: AppHandle, state: State<'_, AppState>) -> Result<Serve
             .map_err(|error| format!("Could not stop llama-server: {error}"))?;
         let _ = child.wait().await;
     }
+    disarm_server_watchdog(&mut managed);
     managed.status = ServerStatus {
         phase: ServerPhase::Stopped,
         port: managed.status.port,
@@ -512,6 +582,7 @@ async fn server_status(state: State<'_, AppState>) -> Result<ServerStatus, Strin
     if let Some(child) = managed.child.as_mut() {
         if let Some(exit) = child.try_wait().map_err(|error| error.to_string())? {
             managed.child = None;
+            disarm_server_watchdog(&mut managed);
             managed.status.phase = ServerPhase::Error;
             managed.status.detail = Some(format!("llama-server exited: {exit}"));
             managed.status.memory_bytes = None;
@@ -579,6 +650,49 @@ fn parse_sse_line(line: &[u8]) -> Result<Option<SseChunk>, String> {
 }
 
 #[tauri::command]
+async fn count_text_tokens(
+    state: State<'_, AppState>,
+    request: TokenizeRequest,
+) -> Result<usize, String> {
+    let managed = state.server.lock().await;
+    if !matches!(managed.status.phase, ServerPhase::Ready) || managed.status.port != request.port {
+        return Err("The local model is not ready".into());
+    }
+    drop(managed);
+    let response = state
+        .client
+        .post(format!("http://{HOST}:{}/tokenize", request.port))
+        .timeout(Duration::from_secs(15))
+        .json(&json!({ "content": request.text }))
+        .send()
+        .await
+        .map_err(|error| format!("Token count failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("Token count returned {}", response.status()));
+    }
+    let value: serde_json::Value = response.json().await.map_err(|error| error.to_string())?;
+    value["tokens"]
+        .as_array()
+        .map(Vec::len)
+        .ok_or_else(|| "Token count response is invalid".into())
+}
+
+#[tauri::command]
+async fn cancel_chat(state: State<'_, AppState>, request_id: String) -> Result<(), String> {
+    let mut requests = state.chat_requests.lock().await;
+    if let Some(sender) = requests.active.get(&request_id) {
+        sender.send(true).map_err(|error| error.to_string())
+    } else {
+        // The UI can send Stop just before stream_chat registers the request.
+        if requests.pending_cancel.len() >= 256 {
+            requests.pending_cancel.clear();
+        }
+        requests.pending_cancel.insert(request_id);
+        Ok(())
+    }
+}
+
+#[tauri::command]
 async fn stream_chat(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -592,8 +706,52 @@ async fn stream_chat(
             return Err("The local model is not ready".into());
         }
     }
+    let mut requests = state.chat_requests.lock().await;
+    let was_cancelled = requests.pending_cancel.remove(&request.request_id);
+    let (cancel_sender, cancel_receiver) = watch::channel(was_cancelled);
+    requests
+        .active
+        .insert(request.request_id.clone(), cancel_sender);
+    drop(requests);
+    let request_id = request.request_id.clone();
+    let result = stream_chat_inner(app, &state, request, cancel_receiver).await;
+    state.chat_requests.lock().await.active.remove(&request_id);
+    result
+}
+
+fn has_repeated_tail(text: &str, allowed_repetitions: Option<u16>) -> bool {
+    let copies = usize::from(allowed_repetitions.unwrap_or(4))
+        .saturating_add(1)
+        .max(5);
+    const MIN_SPAN: usize = 48;
+    const MAX_SPAN: usize = 256;
+    let mut recent = text
+        .chars()
+        .rev()
+        .take(MAX_SPAN * copies)
+        .collect::<Vec<_>>();
+    recent.reverse();
+    for span in MIN_SPAN..=MAX_SPAN.min(recent.len() / copies) {
+        let end = recent.len();
+        let pattern = &recent[end - span..end];
+        if (1..copies).all(|copy| recent[end - (copy + 1) * span..end - copy * span] == *pattern) {
+            return true;
+        }
+    }
+    false
+}
+
+async fn stream_chat_inner(
+    app: AppHandle,
+    state: &AppState,
+    request: ChatRequest,
+    mut cancelled: watch::Receiver<bool>,
+) -> Result<Option<ChatMetrics>, String> {
+    if *cancelled.borrow() {
+        return Err("CHAT_CANCELLED".into());
+    }
     let started_at = Instant::now();
-    let response = state
+    let response_future = state
         .client
         .post(format!(
             "http://{HOST}:{}/v1/chat/completions",
@@ -610,9 +768,11 @@ async fn stream_chat(
             "top_k": 20,
             "thinking_budget_tokens": 512
         }))
-        .send()
-        .await
-        .map_err(|error| format!("Chat request failed: {error}"))?;
+        .send();
+    let response = tokio::select! {
+        response = response_future => response.map_err(|error| format!("Chat request failed: {error}"))?,
+        _ = cancelled.changed() => return Err("CHAT_CANCELLED".into()),
+    };
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
@@ -626,12 +786,21 @@ async fn stream_chat(
     let mut total_tokens = None;
     let mut tokens_per_second = None;
     let mut prompt_tokens_per_second = None;
-    while let Some(chunk) = stream.next().await {
+    let mut generated = String::new();
+    loop {
+        let chunk = tokio::select! {
+            chunk = stream.next() => chunk,
+            _ = cancelled.changed() => return Err("CHAT_CANCELLED".into()),
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
         buffer.extend_from_slice(&chunk.map_err(|error| format!("Stream interrupted: {error}"))?);
         while let Some(position) = buffer.iter().position(|byte| *byte == b'\n') {
             let line: Vec<u8> = buffer.drain(..=position).collect();
             if let Some(parsed) = parse_sse_line(&line)? {
                 if let Some(content) = parsed.content {
+                    generated.push_str(&content);
                     app.emit(
                         "chat-token",
                         TokenEvent {
@@ -640,6 +809,9 @@ async fn stream_chat(
                         },
                     )
                     .map_err(|error| error.to_string())?;
+                    if has_repeated_tail(&generated, request.allowed_repetitions) {
+                        return Err("CHAT_REPETITION".into());
+                    }
                 }
                 prompt_tokens = parsed.prompt_tokens.or(prompt_tokens);
                 completion_tokens = parsed.completion_tokens.or(completion_tokens);
@@ -653,6 +825,7 @@ async fn stream_chat(
     if !buffer.is_empty() {
         if let Some(parsed) = parse_sse_line(&buffer)? {
             if let Some(content) = parsed.content {
+                generated.push_str(&content);
                 app.emit(
                     "chat-token",
                     TokenEvent {
@@ -661,6 +834,9 @@ async fn stream_chat(
                     },
                 )
                 .map_err(|error| error.to_string())?;
+                if has_repeated_tail(&generated, request.allowed_repetitions) {
+                    return Err("CHAT_REPETITION".into());
+                }
             }
             prompt_tokens = parsed.prompt_tokens.or(prompt_tokens);
             completion_tokens = parsed.completion_tokens.or(completion_tokens);
@@ -704,6 +880,7 @@ pub fn run() {
         .manage(AppState {
             server: Mutex::new(ManagedServer::default()),
             client: http_client.clone(),
+            chat_requests: Mutex::new(ChatRequests::default()),
         })
         .manage(search::SearchState::new(http_client.clone()))
         .manage(installer::InstallerState::new(http_client))
@@ -713,6 +890,8 @@ pub fn run() {
             stop_server,
             server_status,
             stream_chat,
+            cancel_chat,
+            count_text_tokens,
             read_attachment,
             search::web_search,
             search::search_provider_status,
@@ -723,6 +902,7 @@ pub fn run() {
             diagnostics::clear_diagnostics,
             rag::import_rag_document,
             rag::list_rag_documents,
+            rag::remove_rag_document,
             rag::search_rag_documents,
             installer::managed_catalog,
             installer::install_runtime,
@@ -734,21 +914,41 @@ pub fn run() {
         ])
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
-                let state = window.state::<AppState>();
-                if let Ok(mut managed) = state.server.try_lock() {
-                    if let Some(child) = managed.child.as_mut() {
-                        let _ = child.start_kill();
-                    }
-                };
+                terminate_server_on_exit(&window.state::<AppState>());
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Bonsai Desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building Bonsai Desktop")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                terminate_server_on_exit(&app.state::<AppState>());
+            }
+        });
+}
+
+fn terminate_server_on_exit(state: &AppState) {
+    if let Ok(mut managed) = state.server.try_lock() {
+        if let Some(child) = managed.child.as_mut() {
+            let _ = child.start_kill();
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stops_long_identical_loops_without_flagging_numbered_items() {
+        let repeated = "Сигнализация: назови первый и последний маркеры документа. ";
+        assert!(has_repeated_tail(&repeated.repeat(6), None));
+        assert!(!has_repeated_tail(&repeated.repeat(12), Some(12)));
+        assert!(has_repeated_tail(&repeated.repeat(13), Some(12)));
+        let numbered = (1..=20)
+            .map(|number| format!("Item {number}: document retrieval keeps the source visible. "))
+            .collect::<String>();
+        assert!(!has_repeated_tail(&numbered, None));
+    }
 
     #[test]
     fn server_arguments_always_bind_to_loopback() {

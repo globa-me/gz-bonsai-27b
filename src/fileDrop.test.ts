@@ -6,13 +6,15 @@ describe("classifyDroppedPaths", () => {
     expect(classifyDroppedPaths(["/tmp/guide.PDF", "/tmp/notes.docx"])).toEqual({
       ragPaths: ["/tmp/guide.PDF", "/tmp/notes.docx"],
       attachmentPaths: [],
+      choicePaths: [],
     });
   });
 
-  it("keeps images, text and code as prompt attachments", () => {
+  it("asks where to attach text while keeping images and code in the prompt", () => {
     expect(classifyDroppedPaths(["/tmp/photo.webp", "/tmp/context.md", "/tmp/app.ts"])).toEqual({
       ragPaths: [],
-      attachmentPaths: ["/tmp/photo.webp", "/tmp/context.md", "/tmp/app.ts"],
+      attachmentPaths: ["/tmp/photo.webp", "/tmp/app.ts"],
+      choicePaths: ["/tmp/context.md"],
     });
   });
 });

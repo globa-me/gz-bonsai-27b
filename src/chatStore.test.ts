@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeChatTitle, renameChatSession, restoreAutoChatTitle, sanitizeChatsForStorage, type ChatSession } from "./chatStore";
+import { normalizeChatTitle, renameChatSession, restoreAutoChatTitle, restoreInterruptedAnswers, sanitizeChatsForStorage, type ChatSession } from "./chatStore";
 
 const chat: ChatSession = {
   id: "chat-1",
@@ -53,5 +53,16 @@ describe("chat titles", () => {
     }]);
     expect(stored[0].messages[0].content).toBe("Answer [1]");
     expect(stored[0].messages[0].sources).toBeUndefined();
+  });
+
+  it("recovers an unfinished answer with its partial text and a retryable error", () => {
+    const recovered = restoreInterruptedAnswers({
+      ...chat,
+      messages: [
+        { id: "question", role: "user", content: "Question" },
+        { id: "reply", role: "assistant", content: "Partial answer", pending: true },
+      ],
+    }, "Interrupted");
+    expect(recovered.messages[1]).toMatchObject({ content: "Partial answer", pending: false, error: "Interrupted" });
   });
 });

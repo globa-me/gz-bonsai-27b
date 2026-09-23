@@ -195,6 +195,25 @@ export default function App() {
   const [activeDownload, setActiveDownload] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, DownloadProgress>>({});
   const [installError, setInstallError] = useState<string | null>(null);
+  const modelMenu = useRef<HTMLDetailsElement | null>(null);
+  const modelSwitching = useRef(false);
+  useEffect(() => {
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (modelMenu.current && !modelMenu.current.contains(event.target as Node)) modelMenu.current.open = false;
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && modelMenu.current?.open) {
+        modelMenu.current.open = false;
+        modelMenu.current.querySelector("summary")?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, []);
   const t = (key: Parameters<typeof translate>[1]) => translate(locale, key);
   const activeChat = chats.find((chat) => chat.id === activeChatId) ?? null;
   const ragDocuments = ragDocumentsByChat[activeChatId ?? ""] ?? [];
@@ -337,7 +356,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauri) {
-      setSystemInfo({ appVersion: "0.5.1", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
+      setSystemInfo({ appVersion: "0.6.1", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
       setCatalog(previewCatalog);
       setRuntimePath(previewCatalog.runtimePath ?? "");
       return;
@@ -504,12 +523,12 @@ export default function App() {
     if (kind === "projector") setProjectorPath(selected);
   }
 
-  async function startServer() {
+  async function startServer(config = { runtimePath, modelPath, projectorPath, port, contextSize }) {
     setLogs([]);
-    setStatus({ phase: "starting", port, detail: t("healthWaiting") });
+    setStatus({ phase: "starting", port: config.port, modelName: fileName(config.modelPath), detail: t("healthWaiting") });
     try {
       const next = await invoke<ServerStatus>("start_server", {
-        config: { runtimePath, modelPath, projectorPath: projectorPath || null, port, contextSize },
+        config: { ...config, projectorPath: config.projectorPath || null },
       });
       setStatus(next);
       recordDiagnostic("runtime", "info", "server_ready", `port=${next.port}`);
@@ -604,6 +623,33 @@ export default function App() {
     setModelPath(model.installedPath);
     setProjectorPath(model.projectorPath ?? "");
     setContextSize(model.contextSize);
+  }
+
+  async function selectModelFromChat(model: CatalogModel) {
+    if (!model.installedPath || !catalog?.runtimePath || modelSwitching.current || activeRequest || status.phase === "starting" || status.phase === "stopping") return;
+    modelMenu.current?.removeAttribute("open");
+    const alreadyRunning = status.phase === "ready" && status.modelName === model.filename;
+    if (alreadyRunning) return;
+    modelSwitching.current = true;
+    const nextConfig = { runtimePath: catalog.runtimePath, modelPath: model.installedPath, projectorPath: model.projectorPath ?? "", port, contextSize: model.contextSize };
+    try {
+      if (status.phase === "ready") {
+        setStatus({ phase: "stopping", port, modelName: status.modelName });
+        const stopped = await invoke<ServerStatus>("stop_server");
+        setStatus(stopped);
+        recordDiagnostic("runtime", "info", "server_stopped_for_model_switch");
+      }
+      setRuntimePath(nextConfig.runtimePath);
+      setModelPath(nextConfig.modelPath);
+      setProjectorPath(nextConfig.projectorPath);
+      setContextSize(nextConfig.contextSize);
+      await startServer(nextConfig);
+    } catch (error) {
+      setStatus({ phase: "error", port, detail: String(error) });
+      recordDiagnostic("runtime", "error", "model_switch_failed");
+    } finally {
+      modelSwitching.current = false;
+    }
   }
 
   function beginNewChat() {
@@ -1000,7 +1046,7 @@ export default function App() {
       <section className={`main-pane ${isDraggingFiles ? "drop-active" : ""}`}>
         {isDraggingFiles && <div className="drop-overlay" role="status" aria-live="polite"><FileIcon /><strong>{t("dropFiles")}</strong><span>{t("dropFilesHint")}</span></div>}
         {view === "chat" && <div className="chat-view">
-          <header className="pane-bar"><button className="model-picker" onClick={() => setView("models")}><Logo small /><span><small>{t("localModel")}</small>{status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))}</span><ChevronIcon /></button>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer}>{t("stopModel")}</button>}</div></details></header>
+          <header className="pane-bar"><details className="model-menu" ref={modelMenu} onToggle={(event) => { if (event.currentTarget.open && isTauri) void refreshCatalog().catch((error) => setInstallError(String(error))); }}><summary className="model-picker"><Logo small /><span><small>{t("localModel")}</small>{status.phase === "ready" || status.phase === "starting" || status.phase === "stopping" ? status.modelName ?? t("notSelected") : modelPath ? fileName(modelPath) : t("notSelected")}</span><ChevronIcon /></summary><div className="model-menu-popover"><strong>{t("installedModels")}</strong>{catalog?.models.filter((model) => model.installed && model.installedPath).map((model) => <button key={model.id} className="model-menu-option" disabled={Boolean(activeRequest) || status.phase === "starting" || status.phase === "stopping"} onClick={() => void selectModelFromChat(model)}><span><b>{model.name}</b><small>{formatBytes(model.sizeBytes, locale)} · {model.contextSize / 1024}K</small></span><em>{status.phase === "ready" && status.modelName === model.filename ? t("running") : t("start")}</em></button>)}{!catalog?.models.some((model) => model.installed && model.installedPath) && <p>{t("noInstalledModels")}</p>}{status.detail && status.phase === "error" && <p className="model-menu-error">{status.detail}</p>}<div className="model-menu-actions">{status.phase === "ready" && <button onClick={() => { modelMenu.current?.removeAttribute("open"); void stopServer(); }} disabled={Boolean(activeRequest)}>{t("stopModel")}</button>}<button onClick={() => { modelMenu.current?.removeAttribute("open"); setView("models"); }}>{t("manageModels")}</button></div></div></details>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer} disabled={Boolean(activeRequest)}>{t("stopModel")}</button>}</div></details></header>
           <div className={`conversation ${messages.length === 0 ? "is-empty" : ""}`}>
             {messages.length === 0 ? <div className="welcome"><Logo /><h1>{emptyChatTitle}</h1>{canStart ? <button onClick={() => void startServer()}>{t("start")}</button> : !modelConfigured && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => {
               const sources = ephemeralSources[message.id] ?? message.sources;

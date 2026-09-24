@@ -2,7 +2,7 @@
 <h1 align="center">GZ Bonsai 27B</h1>
 <p align="center">Простое открытое macOS-приложение для приватного запуска моделей Bonsai на своём Mac.</p>
 <p align="center">
-  <a href="https://github.com/globa-me/gz-bonsai-27b/releases/tag/v0.6.1"><img alt="Release 0.6.1" src="https://img.shields.io/badge/stable-0.6.1-2f6949" /></a>
+  <a href="https://github.com/globa-me/gz-bonsai-27b/releases/tag/v0.6.2"><img alt="Release 0.6.2" src="https://img.shields.io/badge/stable-0.6.2-2f6949" /></a>
   <img alt="macOS Apple Silicon" src="https://img.shields.io/badge/macOS-Apple%20Silicon-2f6949" />
   <img alt="License MIT" src="https://img.shields.io/badge/code-MIT-dceee2" />
 </p>
@@ -11,9 +11,13 @@
 
 ## Скачать
 
-[Скачать GZ Bonsai 27B 0.6.1 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.6.1/GZ-Bonsai-27B-0.6.1-arm64.dmg) — подписанный и нотариально заверенный DMG. Перетащите приложение в папку Applications и работайте на здоровье :-).
+[Скачать GZ Bonsai 27B 0.6.2 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.6.2/GZ-Bonsai-27B-0.6.2-arm64.dmg) — подписанный и нотариально заверенный DMG. Перетащите приложение в папку Applications и работайте на здоровье :-).
 
 Совместимый runtime уже находится внутри приложения. Откройте «Модели», скачайте выбранный вариант и запустите локальный чат.
+
+### Что нового в 0.6.2
+
+В чате кнопки вложений, документов и веб-поиска стали компактными и освободили место для текста. Боковую панель можно свернуть и открыть снова; «Другие модели» заметнее в каталоге. Строка о внешнем поиске теперь помещается под полем ввода, а повторные пояснения убраны. Для Bonsai 2 веб-поиск выключает thinking, чтобы черновик рассуждений не попадал в ответ, и использует параметры instruct-режима, рекомендованные PrismML. Подробнее: [заметки к 0.6.2](docs/release-notes-0.6.2.md) и [проверка](docs/e2e-0.6.2.md).
 
 ### Что нового в 0.6.1
 
@@ -40,7 +44,7 @@
 
 ## Что уже работает
 
-Текущий `0.6.1` — рабочая версия для macOS на Apple Silicon:
+Текущий `0.6.2` — рабочая версия для macOS на Apple Silicon:
 
 - Tauri 2 + React + TypeScript;
 - определение чипа, архитектуры, RAM, версии macOS и свободного места;
@@ -49,6 +53,7 @@
 - загрузка с паузой, возобновлением, отменой, проверкой размера и SHA-256;
 - безопасное удаление установленных моделей;
 - выбор, запуск, переключение и остановка установленных моделей из верхнего меню чата;
+- компактное поле ввода и сворачиваемая боковая панель;
 - ручной выбор собственного GGUF и необязательного `mmproj` в расширенных настройках;
 - запуск процесса только на localhost, проверка занятого порта и health check;
 - потоковый ответ через `/v1/chat/completions`;
@@ -107,7 +112,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 Дополнительно выполнен реальный smoke-тест на Apple M3 Pro: официальный runtime `prism-b10709-9a9394a` загрузил Bonsai 1.7B Q1_0, прошёл health check и вернул потоковый ответ. Условия и границы проверки: [docs/smoke-test-2026-09-21.md](docs/smoke-test-2026-09-21.md).
 
-Проверка релиза `0.6.1`: [docs/e2e-0.6.1.md](docs/e2e-0.6.1.md). Предыдущие проверки: [0.6.0](docs/e2e-0.6.0.md), [0.5.1](docs/e2e-0.5.1.md) и [0.5.0](docs/e2e-0.5.0.md). Устройство и границы поиска описаны в [docs/web-search.md](docs/web-search.md), локального RAG — в [docs/rag.md](docs/rag.md).
+Проверка релиза `0.6.2`: [docs/e2e-0.6.2.md](docs/e2e-0.6.2.md). Предыдущие проверки: [0.6.1](docs/e2e-0.6.1.md), [0.6.0](docs/e2e-0.6.0.md), [0.5.1](docs/e2e-0.5.1.md) и [0.5.0](docs/e2e-0.5.0.md). Устройство и границы поиска описаны в [docs/web-search.md](docs/web-search.md), локального RAG — в [docs/rag.md](docs/rag.md).
 
 ## Архитектура и безопасность
 

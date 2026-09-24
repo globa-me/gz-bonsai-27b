@@ -88,7 +88,7 @@ components:
     typography: "{typography.body}"
     rounded: "{rounded.composer}"
     padding: "10px 11px 10px 15px"
-    height: "68px"
+    height: "62px"
   field:
     backgroundColor: "#fafbfa"
     textColor: "{colors.body-ink}"
@@ -189,13 +189,13 @@ The palette is a muted grove of forest green, pale mint, warm cream, and green-b
 
 The application is a full-height two-plane shell with a 10px outer inset. At standard desktop widths the sidebar is fixed at 232px and the remaining width belongs to the main pane; below 900px the sidebar contracts to 190px while content remains desktop-oriented. The app intentionally enforces a 760px minimum width rather than introducing a mobile navigation pattern.
 
-The sidebar persists across all views. Chat adds a compact 64px model-and-status bar, a centered conversation column no wider than 780px, and a bottom-anchored composer on the same measure. Content pages scroll independently and use fluid horizontal padding from 30px to 70px. Settings content stops at 690px; narrower diagnostic and about pages stop at 920px.
+The sidebar starts open across all views and can collapse to give chat the full window width. Its open/closed state is saved locally, with a persistent restore button in the main pane. Chat adds a compact 64px model-and-status bar, a centered conversation column no wider than 780px, and a bottom-anchored composer up to 880px wide. Content pages scroll independently and use fluid horizontal padding from 30px to 70px. Settings content stops at 690px; narrower diagnostic and about pages stop at 920px.
 
 Spacing is compact within controls and spacious between regions. Use the frontmatter scale for recurring gaps and padding, with 24–32px reserved for page boundaries and major section separation. Preserve breathing room in the canvas instead of filling it with cards.
 
-**The Persistent Navigation Rule.** The pale-green sidebar remains a stable spatial anchor; views replace only the main pane.
+**The Recoverable Navigation Rule.** The pale-green sidebar anchors navigation when open; a visible button restores it after collapse from any view.
 
-**The Conversation Measure Rule.** Messages and the composer share the same centered 780px maximum width.
+**The Conversation Measure Rule.** Messages retain a 780px reading measure; the composer may extend to 880px to keep the writing area generous beside tool icons.
 
 ## Elevation & Depth
 
@@ -254,9 +254,10 @@ Authored icons are outline SVGs with rounded caps and joins, normally 16–20px.
 ### Composer
 
 - **Style:** A bottom-anchored white writing surface with an unbordered textarea and square send control.
-- **Shape:** 15px corners and a 68px minimum height (`components.composer`).
+- **Shape:** 15px corners and a 62px minimum height (`components.composer`).
 - **Action:** The forest send button uses the authored upward arrow; its disabled state becomes muted gray-green. A visible Stop action takes its place during streaming, and failed answers expose Retry.
 - **Depth:** Use Composer Ambient only, backed by the existing fade from transparent to Main Paper.
+- **Tools:** Attachment, chat documents, web search, and send/stop use compact 36px square icon buttons with localized accessible names and hover titles. The web-search button has a visible active state; a single short line below the composer names the external provider when search is on.
 - **File drop:** Dragging files over the chat replaces the work area with a calm, high-contrast drop target. PDF/DOCX become chat documents; images and code attach to the pending request; TXT/Markdown/CSV/JSON show a scope choice. The document panel exposes separate detach and local delete actions.
 - **Sources:** Cite one file with one label. Show whether its complete text or selected excerpts were passed to the model; expandable excerpts remain keyboard accessible.
 - **Generation state:** Before the first token, show a compact three-dot Bonsai activity indicator beside explicit status text; respect Reduced Motion and remove the indicator as soon as streamed text appears.

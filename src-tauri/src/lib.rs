@@ -97,6 +97,8 @@ struct ChatRequest {
     port: u16,
     messages: Vec<ChatMessage>,
     #[serde(default)]
+    web_search: bool,
+    #[serde(default)]
     allowed_repetitions: Option<u16>,
 }
 
@@ -698,14 +700,19 @@ async fn stream_chat(
     state: State<'_, AppState>,
     request: ChatRequest,
 ) -> Result<Option<ChatMetrics>, String> {
-    {
+    let bonsai2 = {
         let managed = state.server.lock().await;
         if !matches!(managed.status.phase, ServerPhase::Ready)
             || managed.status.port != request.port
         {
             return Err("The local model is not ready".into());
         }
-    }
+        managed
+            .status
+            .model_name
+            .as_deref()
+            .is_some_and(|name| name.starts_with("Ternary-Bonsai-2-27B-"))
+    };
     let mut requests = state.chat_requests.lock().await;
     let was_cancelled = requests.pending_cancel.remove(&request.request_id);
     let (cancel_sender, cancel_receiver) = watch::channel(was_cancelled);
@@ -714,7 +721,7 @@ async fn stream_chat(
         .insert(request.request_id.clone(), cancel_sender);
     drop(requests);
     let request_id = request.request_id.clone();
-    let result = stream_chat_inner(app, &state, request, cancel_receiver).await;
+    let result = stream_chat_inner(app, &state, request, cancel_receiver, bonsai2).await;
     state.chat_requests.lock().await.active.remove(&request_id);
     result
 }
@@ -741,11 +748,34 @@ fn has_repeated_tail(text: &str, allowed_repetitions: Option<u16>) -> bool {
     false
 }
 
+fn chat_completion_payload(request: &ChatRequest, bonsai2: bool) -> serde_json::Value {
+    let mut payload = json!({
+        "model": "bonsai",
+        "messages": request.messages,
+        "stream": true,
+        "stream_options": { "include_usage": true },
+        "timings_per_token": true,
+        "temperature": if bonsai2 { if request.web_search { 0.7 } else { 1.0 } } else { 0.5 },
+        "top_p": if bonsai2 { if request.web_search { 0.8 } else { 0.95 } } else { 0.85 },
+        "top_k": 20,
+        "thinking_budget_tokens": if request.web_search { 0 } else { 512 }
+    });
+    if bonsai2 {
+        payload["min_p"] = json!(if request.web_search { 0.0 } else { 0.05 });
+        payload["presence_penalty"] = json!(if request.web_search { 1.5 } else { 0.0 });
+    }
+    if request.web_search {
+        payload["chat_template_kwargs"] = json!({ "enable_thinking": false });
+    }
+    payload
+}
+
 async fn stream_chat_inner(
     app: AppHandle,
     state: &AppState,
     request: ChatRequest,
     mut cancelled: watch::Receiver<bool>,
+    bonsai2: bool,
 ) -> Result<Option<ChatMetrics>, String> {
     if *cancelled.borrow() {
         return Err("CHAT_CANCELLED".into());
@@ -757,17 +787,7 @@ async fn stream_chat_inner(
             "http://{HOST}:{}/v1/chat/completions",
             request.port
         ))
-        .json(&json!({
-            "model": "bonsai",
-            "messages": request.messages,
-            "stream": true,
-            "stream_options": { "include_usage": true },
-            "timings_per_token": true,
-            "temperature": 0.5,
-            "top_p": 0.85,
-            "top_k": 20,
-            "thinking_budget_tokens": 512
-        }))
+        .json(&chat_completion_payload(&request, bonsai2))
         .send();
     let response = tokio::select! {
         response = response_future => response.map_err(|error| format!("Chat request failed: {error}"))?,
@@ -1002,5 +1022,42 @@ mod tests {
         assert_eq!(parsed.total_tokens, Some(150));
         assert_eq!(parsed.tokens_per_second, Some(12.25));
         assert_eq!(parsed.prompt_tokens_per_second, Some(48.5));
+    }
+
+    #[test]
+    fn web_search_disables_template_thinking() {
+        let mut request = ChatRequest {
+            request_id: "test".into(),
+            port: 18080,
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: json!("latest news"),
+            }],
+            web_search: true,
+            allowed_repetitions: None,
+        };
+        let web_payload = chat_completion_payload(&request, true);
+        assert_eq!(web_payload["thinking_budget_tokens"], 0);
+        assert_eq!(web_payload["temperature"], 0.7);
+        assert_eq!(web_payload["top_p"], 0.8);
+        assert_eq!(web_payload["min_p"], 0.0);
+        assert_eq!(web_payload["presence_penalty"], 1.5);
+        assert_eq!(
+            web_payload["chat_template_kwargs"]["enable_thinking"],
+            false
+        );
+
+        request.web_search = false;
+        let chat_payload = chat_completion_payload(&request, true);
+        assert_eq!(chat_payload["thinking_budget_tokens"], 512);
+        assert_eq!(chat_payload["temperature"], 1.0);
+        assert_eq!(chat_payload["top_p"], 0.95);
+        assert_eq!(chat_payload["min_p"], 0.05);
+        assert_eq!(chat_payload["presence_penalty"], 0.0);
+        assert!(chat_payload.get("chat_template_kwargs").is_none());
+
+        let other_model_payload = chat_completion_payload(&request, false);
+        assert_eq!(other_model_payload["temperature"], 0.5);
+        assert!(other_model_payload.get("min_p").is_none());
     }
 }

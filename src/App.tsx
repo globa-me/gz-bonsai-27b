@@ -191,12 +191,20 @@ export default function App() {
   const [reportCopied, setReportCopied] = useState(false);
   const [endpointCopied, setEndpointCopied] = useState(false);
   const [view, setView] = useState<View>("chat");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return window.localStorage.getItem("bonsai-sidebar-collapsed") === "true"; }
+    catch { return false; }
+  });
   const [catalog, setCatalog] = useState<ManagedCatalog | null>(null);
   const [activeDownload, setActiveDownload] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, DownloadProgress>>({});
   const [installError, setInstallError] = useState<string | null>(null);
   const modelMenu = useRef<HTMLDetailsElement | null>(null);
   const modelSwitching = useRef(false);
+  useEffect(() => {
+    try { window.localStorage.setItem("bonsai-sidebar-collapsed", String(sidebarCollapsed)); }
+    catch { /* Window storage may be unavailable; the toggle still works. */ }
+  }, [sidebarCollapsed]);
   useEffect(() => {
     const closeOnOutsideClick = (event: PointerEvent) => {
       if (modelMenu.current && !modelMenu.current.contains(event.target as Node)) modelMenu.current.open = false;
@@ -356,7 +364,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauri) {
-      setSystemInfo({ appVersion: "0.6.1", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
+      setSystemInfo({ appVersion: "0.6.2", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
       setCatalog(previewCatalog);
       setRuntimePath(previewCatalog.runtimePath ?? "");
       return;
@@ -961,7 +969,7 @@ export default function App() {
     }
     recordDiagnostic("chat", "info", "request_started", `web=${sources.length > 0} rag=${Boolean(ragContext)}`);
     try {
-      const metrics = await invoke<MessageMetrics | null>("stream_chat", { request: { requestId, port, messages: history, allowedRepetitions: boundedRepetitionCount(content) } });
+      const metrics = await invoke<MessageMetrics | null>("stream_chat", { request: { requestId, port, messages: history, webSearch: sources.length > 0, allowedRepetitions: boundedRepetitionCount(content) } });
       updateChatMessages(chatId, (current) => current.map((message) =>
         message.id === requestId ? { ...message, pending: false, ...(metrics ? { metrics } : {}) } : message,
       ));
@@ -998,9 +1006,9 @@ export default function App() {
   const quickStartModel = selectedManagedModel ?? recommendedModel;
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar">
-        <div className="brand"><Logo /><span>{t("appName")}</span></div>
+    <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <aside className="sidebar" aria-hidden={sidebarCollapsed} inert={sidebarCollapsed}>
+        <div className="brand"><Logo /><span>{t("appName")}</span><button className="sidebar-toggle" onClick={() => setSidebarCollapsed(true)} aria-label={t("hideSidebar")} title={t("hideSidebar")}><PanelIcon /></button></div>
         <nav>
           <NavButton icon="chat" label={t("navChat")} active={false} onClick={beginNewChat} />
           <NavButton icon="models" label={t("navModels")} active={view === "models"} onClick={() => setView("models")} />
@@ -1038,12 +1046,12 @@ export default function App() {
         </div>
         <div className="sidebar-footer">
           <div className={`save-state ${saveState}`} role="status" aria-live="polite">{saveState === "saving" ? t("savingChats") : saveState === "error" ? <><span>{t("saveFailed")}</span><button onClick={() => { setSaveState("saving"); if (historyLoadFailed) void initializeChats(); else void saveQueue.current(chats).then(() => setSaveState("saved")).catch(() => setSaveState("error")); }}>{historyLoadFailed ? t("retryLoad") : t("retrySave")}</button></> : t("savedChats")}</div>
-          <div className="privacy"><span className="privacy-dot" />{webSearchEnabled ? t("privacyWithSearch").replace("{provider}", searchProviderName) : t("privacy")}</div>
           <div className="locale-switch" aria-label="Language">{(["ru", "en"] as const).map((item) => <button className={locale === item ? "active" : ""} onClick={() => setLocale(item)} key={item}>{item.toUpperCase()}</button>)}</div>
           <ExternalLink href="https://zakharov.asia/ru/">{t("developedBy")} <ExternalIcon /></ExternalLink>
         </div>
       </aside>
       <section className={`main-pane ${isDraggingFiles ? "drop-active" : ""}`}>
+        {sidebarCollapsed && <button className="sidebar-toggle sidebar-toggle-open" onClick={() => setSidebarCollapsed(false)} aria-label={t("showSidebar")} title={t("showSidebar")}><PanelIcon /></button>}
         {isDraggingFiles && <div className="drop-overlay" role="status" aria-live="polite"><FileIcon /><strong>{t("dropFiles")}</strong><span>{t("dropFilesHint")}</span></div>}
         {view === "chat" && <div className="chat-view">
           <header className="pane-bar"><details className="model-menu" ref={modelMenu} onToggle={(event) => { if (event.currentTarget.open && isTauri) void refreshCatalog().catch((error) => setInstallError(String(error))); }}><summary className="model-picker"><Logo small /><span><small>{t("localModel")}</small>{status.phase === "ready" || status.phase === "starting" || status.phase === "stopping" ? status.modelName ?? t("notSelected") : modelPath ? fileName(modelPath) : t("notSelected")}</span><ChevronIcon /></summary><div className="model-menu-popover"><strong>{t("installedModels")}</strong>{catalog?.models.filter((model) => model.installed && model.installedPath).map((model) => <button key={model.id} className="model-menu-option" disabled={Boolean(activeRequest) || status.phase === "starting" || status.phase === "stopping"} onClick={() => void selectModelFromChat(model)}><span><b>{model.name}</b><small>{formatBytes(model.sizeBytes, locale)} · {model.contextSize / 1024}K</small></span><em>{status.phase === "ready" && status.modelName === model.filename ? t("running") : t("start")}</em></button>)}{!catalog?.models.some((model) => model.installed && model.installedPath) && <p>{t("noInstalledModels")}</p>}{status.detail && status.phase === "error" && <p className="model-menu-error">{status.detail}</p>}<div className="model-menu-actions">{status.phase === "ready" && <button onClick={() => { modelMenu.current?.removeAttribute("open"); void stopServer(); }} disabled={Boolean(activeRequest)}>{t("stopModel")}</button>}<button onClick={() => { modelMenu.current?.removeAttribute("open"); setView("models"); }}>{t("manageModels")}</button></div></div></details>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer} disabled={Boolean(activeRequest)}>{t("stopModel")}</button>}</div></details></header>
@@ -1072,15 +1080,14 @@ export default function App() {
             <div className="composer">
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder={t("placeholder")} disabled={!historyLoaded || status.phase !== "ready" || Boolean(activeRequest)} rows={2} />
               <div className="composer-actions">
-                <button className="tool-button" onClick={chooseAttachments} disabled={!historyLoaded || status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /><span>{t("toMessage")}</span></button>
-                <button className="tool-button rag-button" onClick={chooseRagDocuments} disabled={!historyLoaded || Boolean(activeRequest) || ragBusy || (activeChat?.ragDocumentIds?.length ?? 0) >= 12} aria-label={t("addRagDocuments")} title={t("addRagDocuments")}><KnowledgeIcon /><span>{t("addRagDocuments")}</span></button>
-                <button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={toggleWebSearch} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} aria-label={t("webSearch")} title={t("webSearch")}><GlobeIcon /><span>{t("webSearch")}</span></button>
-                {activeRequest && !searching && !ragBusy ? <button className="send-button stop-answer" onClick={() => void stopGeneration()} aria-label={t("stopAnswer")}>{t("stop")}</button> : <button className="send-button" onClick={() => void sendMessage()} disabled={!historyLoaded || (!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching || ragBusy} aria-label={t("send")}><SendIcon /></button>}
+                <button className="tool-button" onClick={chooseAttachments} disabled={!historyLoaded || status.phase !== "ready" || Boolean(activeRequest)} aria-label={t("attachFiles")} title={t("attachFiles")}><PlusIcon /></button>
+                <button className="tool-button rag-button" onClick={chooseRagDocuments} disabled={!historyLoaded || Boolean(activeRequest) || ragBusy || (activeChat?.ragDocumentIds?.length ?? 0) >= 12} aria-label={t("addRagDocuments")} title={t("addRagDocuments")}><KnowledgeIcon /></button>
+                <button className={`tool-button search-toggle ${webSearchEnabled ? "active" : ""}`} onClick={toggleWebSearch} disabled={Boolean(activeRequest)} aria-pressed={webSearchEnabled} aria-label={t("webSearch")} title={t("webSearch")}><GlobeIcon /></button>
+                {activeRequest && !searching && !ragBusy ? <button className="send-button stop-answer" onClick={() => void stopGeneration()} aria-label={t("stopAnswer")} title={t("stopAnswer")}><StopIcon /></button> : <button className="send-button" onClick={() => void sendMessage()} disabled={!historyLoaded || (!draft.trim() && !pendingAttachments.length) || status.phase !== "ready" || Boolean(activeRequest) || searching || ragBusy} aria-label={t("send")} title={t("send")}><SendIcon /></button>}
               </div>
             </div>
             {ragBusy && ragBusyChatId === activeChatId && <div className="rag-disclosure" role="status">{t("ragIndexing")}</div>}
             {webSearchEnabled && <div className="search-disclosure" role="status">{searching ? t("searchingWeb").replace("{provider}", searchProviderName) : t("webSearchDisclosure").replace("{provider}", searchProviderName)}</div>}
-            <div className="composer-footnote">{t("chatContextNotice")}</div>
           </div>
         </div>}
         {view === "models" && <div className="content-page">
@@ -1091,7 +1098,7 @@ export default function App() {
           <section className="endpoint-card"><div><small>{t("openAiEndpoint")}</small><strong>http://127.0.0.1:{port}/v1</strong><p>{status.phase === "ready" ? t("endpointReady") : t("endpointStartsWithModel")}</p></div><div><span className={`endpoint-state ${status.phase === "ready" ? "ready" : ""}`}>{status.phase === "ready" ? t("available") : t("offline")}</span><button className="quiet" onClick={copyEndpoint}>{endpointCopied ? t("endpointCopied") : t("copyEndpoint")}</button></div></section>
           <section className="catalog-section">
             <div className="section-heading"><div><h2>{t("catalogTitle")}</h2><p>{t("catalogDescription")}</p></div>{catalog && <span className={`runtime-pill ${catalog.runtimeInstalled ? "ready" : ""}`}>{catalog.runtimeInstalled ? t("runtimeIncluded") : t("runtimeMissing")}</span>}</div>
-            <details className="other-models"><summary>{t("otherModels")}</summary><div className="model-grid">{catalog?.models.filter((model) => model.id !== quickStartModel?.id).map((model) => {
+            <details className="other-models"><summary><span>{t("otherModels")}</span><ChevronIcon /></summary><div className="model-grid">{catalog?.models.filter((model) => model.id !== quickStartModel?.id).map((model) => {
               const isActive = activeDownload === model.id || activeDownload === `${model.id}-vision`;
               const progress = downloadProgress[activeDownload === `${model.id}-vision` ? `${model.id}-vision` : model.id];
               const percent = progress?.totalBytes ? Math.min(100, Math.round(progress.downloadedBytes / progress.totalBytes * 100)) : 0;
@@ -1138,6 +1145,8 @@ function GeneratingIndicator({ label }: { label: string }) {
 
 function Logo({ small = false }: { small?: boolean }) { return <img className={`logo ${small ? "small" : ""}`} src={appIcon} alt="" aria-hidden="true" />; }
 function SendIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 15V5m0 0L6 9m4-4 4 4" /></svg>; }
+function StopIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="5.5" y="5.5" width="9" height="9" rx="1.5" /></svg>; }
+function PanelIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3" width="15" height="14" rx="2" /><path d="M7.5 3v14" /></svg>; }
 function PlusIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" /></svg>; }
 function GlobeIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="6" /><path d="M4 10h12M10 4c2 2 2 10 0 12M10 4c-2 2-2 10 0 12" /></svg>; }
 function FileIcon() { return <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6 3h5l3 3v11H6zM11 3v4h4" /></svg>; }

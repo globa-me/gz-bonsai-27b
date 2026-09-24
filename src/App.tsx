@@ -112,9 +112,9 @@ const previewCatalog: ManagedCatalog = {
     { id: "bonsai-1.7b-q1", name: "Bonsai 1.7B · Q1_0", description: "", baseModelName: "Qwen3-1.7B", baseModelUrl: "https://huggingface.co/Qwen/Qwen3-1.7B", bonsaiUrl: "https://huggingface.co/prism-ml/Bonsai-1.7B-gguf", filename: "Bonsai-1.7B-Q1_0.gguf", sizeBytes: 248302272, estimatedMemoryBytes: 8 * 1024 ** 3, contextSize: 4096, installed: false },
     { id: "bonsai-4b-q1", name: "Bonsai 4B · Q1_0", description: "", baseModelName: "Qwen3-4B", baseModelUrl: "https://huggingface.co/Qwen/Qwen3-4B", bonsaiUrl: "https://huggingface.co/prism-ml/Bonsai-4B-gguf", filename: "Bonsai-4B-Q1_0.gguf", sizeBytes: 572270624, estimatedMemoryBytes: 12 * 1024 ** 3, contextSize: 8192, installed: false },
     { id: "bonsai-8b-q1", name: "Bonsai 8B · Q1_0", description: "", baseModelName: "Qwen3-8B", baseModelUrl: "https://huggingface.co/Qwen/Qwen3-8B", bonsaiUrl: "https://huggingface.co/prism-ml/Bonsai-8B-gguf", filename: "Bonsai-8B-Q1_0.gguf", sizeBytes: 1158654496, estimatedMemoryBytes: 16 * 1024 ** 3, contextSize: 16384, installed: false },
-    { id: "bonsai-27b-q1", name: "Bonsai 27B · 1-bit Q1_0", description: "", baseModelName: "Qwen3.6-27B", baseModelUrl: "https://huggingface.co/Qwen/Qwen3.6-27B", bonsaiUrl: "https://huggingface.co/prism-ml/Bonsai-27B-gguf", filename: "Bonsai-27B-Q1_0.gguf", sizeBytes: 3803452480, estimatedMemoryBytes: 16 * 1024 ** 3, contextSize: 8192, installed: false },
-    { id: "bonsai-2-27b-ptq1", name: "Bonsai 2 27B · ternary PTQ1_0", description: "", baseModelName: "Qwen3.8-27B", baseModelUrl: "https://huggingface.co/Qwen/Qwen3.8-27B", bonsaiUrl: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf", filename: "Ternary-Bonsai-2-27B-PTQ1_0.gguf", sizeBytes: 5946648928, estimatedMemoryBytes: 24 * 1024 ** 3, contextSize: 8192, installed: false },
-    { id: "bonsai-2-27b-pq2", name: "Bonsai 2 27B · ternary PQ2_0", description: "", baseModelName: "Qwen3.8-27B", baseModelUrl: "https://huggingface.co/Qwen/Qwen3.8-27B", bonsaiUrl: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf", filename: "Ternary-Bonsai-2-27B-PQ2_0.gguf", sizeBytes: 7206168928, estimatedMemoryBytes: 32 * 1024 ** 3, contextSize: 16384, installed: false },
+    { id: "bonsai-27b-q1", name: "Bonsai 27B · 1-bit Q1_0", description: "", baseModelName: "Qwen3.6-27B", baseModelUrl: "https://huggingface.co/Qwen/Qwen3.6-27B", bonsaiUrl: "https://huggingface.co/prism-ml/Bonsai-27B-gguf", filename: "Bonsai-27B-Q1_0.gguf", sizeBytes: 3803452480, estimatedMemoryBytes: 16 * 1024 ** 3, contextSize: 8192, installed: false, visionCapable: true },
+    { id: "bonsai-2-27b-ptq1", name: "Bonsai 2 27B · ternary PTQ1_0", description: "", baseModelName: "Qwen3.8-27B", baseModelUrl: "https://huggingface.co/Qwen/Qwen3.8-27B", bonsaiUrl: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf", filename: "Ternary-Bonsai-2-27B-PTQ1_0.gguf", sizeBytes: 5946648928, estimatedMemoryBytes: 24 * 1024 ** 3, contextSize: 8192, installed: false, visionCapable: true },
+    { id: "bonsai-2-27b-pq2", name: "Bonsai 2 27B · ternary PQ2_0", description: "", baseModelName: "Qwen3.8-27B", baseModelUrl: "https://huggingface.co/Qwen/Qwen3.8-27B", bonsaiUrl: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf", filename: "Ternary-Bonsai-2-27B-PQ2_0.gguf", sizeBytes: 7206168928, estimatedMemoryBytes: 32 * 1024 ** 3, contextSize: 16384, installed: false, visionCapable: true },
   ],
 };
 
@@ -367,7 +367,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauri) {
-      setSystemInfo({ appVersion: "0.6.3", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
+      setSystemInfo({ appVersion: "0.6.4", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
       setCatalog(previewCatalog);
       setRuntimePath(previewCatalog.runtimePath ?? "");
       return;

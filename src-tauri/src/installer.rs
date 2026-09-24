@@ -28,6 +28,9 @@ struct ModelDefinition {
     id: &'static str,
     name: &'static str,
     description: &'static str,
+    base_model_name: &'static str,
+    base_model_url: &'static str,
+    bonsai_url: &'static str,
     url: &'static str,
     filename: &'static str,
     size: u64,
@@ -49,6 +52,9 @@ const MODELS: [ModelDefinition; 6] = [
         id: "bonsai-1.7b-q1",
         name: "Bonsai 1.7B · Q1_0",
         description: "Самая лёгкая модель для знакомства и быстрых локальных задач.",
+        base_model_name: "Qwen3-1.7B",
+        base_model_url: "https://huggingface.co/Qwen/Qwen3-1.7B",
+        bonsai_url: "https://huggingface.co/prism-ml/Bonsai-1.7B-gguf",
         url: "https://huggingface.co/prism-ml/Bonsai-1.7B-gguf/resolve/210a9e99f79cb184909d49595906526eb2b3dd9a/Bonsai-1.7B-Q1_0.gguf?download=true",
         filename: "Bonsai-1.7B-Q1_0.gguf",
         size: 248_302_272,
@@ -60,6 +66,9 @@ const MODELS: [ModelDefinition; 6] = [
         id: "bonsai-4b-q1",
         name: "Bonsai 4B · Q1_0",
         description: "Компактный баланс скорости и качества.",
+        base_model_name: "Qwen3-4B",
+        base_model_url: "https://huggingface.co/Qwen/Qwen3-4B",
+        bonsai_url: "https://huggingface.co/prism-ml/Bonsai-4B-gguf",
         url: "https://huggingface.co/prism-ml/Bonsai-4B-gguf/resolve/78f2c2bacd0904ffaba24b4873ed975e5818354a/Bonsai-4B-Q1_0.gguf?download=true",
         filename: "Bonsai-4B-Q1_0.gguf",
         size: 572_270_624,
@@ -71,6 +80,9 @@ const MODELS: [ModelDefinition; 6] = [
         id: "bonsai-8b-q1",
         name: "Bonsai 8B · Q1_0",
         description: "Более сильная компактная модель для Mac с запасом памяти.",
+        base_model_name: "Qwen3-8B",
+        base_model_url: "https://huggingface.co/Qwen/Qwen3-8B",
+        bonsai_url: "https://huggingface.co/prism-ml/Bonsai-8B-gguf",
         url: "https://huggingface.co/prism-ml/Bonsai-8B-gguf/resolve/48516770dd04643643e9f9019a2a349cf26c5dbd/Bonsai-8B-Q1_0.gguf?download=true",
         filename: "Bonsai-8B-Q1_0.gguf",
         size: 1_158_654_496,
@@ -82,6 +94,9 @@ const MODELS: [ModelDefinition; 6] = [
         id: "bonsai-27b-q1",
         name: "Bonsai 27B · 1-bit Q1_0",
         description: "Полная 27B-модель с бинарными весами и минимальным размером.",
+        base_model_name: "Qwen3.6-27B",
+        base_model_url: "https://huggingface.co/Qwen/Qwen3.6-27B",
+        bonsai_url: "https://huggingface.co/prism-ml/Bonsai-27B-gguf",
         url: "https://huggingface.co/prism-ml/Bonsai-27B-gguf/resolve/f10afb355f104535e3e3e98cf7ab7795c72bd292/Bonsai-27B-Q1_0.gguf?download=true",
         filename: "Bonsai-27B-Q1_0.gguf",
         size: 3_803_452_480,
@@ -93,6 +108,9 @@ const MODELS: [ModelDefinition; 6] = [
         id: "bonsai-2-27b-ptq1",
         name: "Bonsai 2 27B · ternary PTQ1_0",
         description: "Тернарная 27B-модель в самой компактной плотной упаковке trits.",
+        base_model_name: "Qwen3.8-27B",
+        base_model_url: "https://huggingface.co/Qwen/Qwen3.8-27B",
+        bonsai_url: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf",
         url: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/6ed5e12bf84b7a63069882c91dd9e9218647d17b/Ternary-Bonsai-2-27B-PTQ1_0.gguf?download=true",
         filename: "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
         size: 5_946_648_928,
@@ -104,6 +122,9 @@ const MODELS: [ModelDefinition; 6] = [
         id: "bonsai-2-27b-pq2",
         name: "Bonsai 2 27B · ternary PQ2_0",
         description: "Тернарная 27B-модель в упаковке, измеренной PrismML на Apple Silicon.",
+        base_model_name: "Qwen3.8-27B",
+        base_model_url: "https://huggingface.co/Qwen/Qwen3.8-27B",
+        bonsai_url: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf",
         url: "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/6ed5e12bf84b7a63069882c91dd9e9218647d17b/Ternary-Bonsai-2-27B-PQ2_0.gguf?download=true",
         filename: "Ternary-Bonsai-2-27B-PQ2_0.gguf",
         size: 7_206_168_928,
@@ -139,6 +160,9 @@ pub struct CatalogModel {
     id: String,
     name: String,
     description: String,
+    base_model_name: String,
+    base_model_url: String,
+    bonsai_url: String,
     filename: String,
     size_bytes: u64,
     estimated_memory_bytes: u64,
@@ -268,6 +292,9 @@ pub fn managed_catalog(app: AppHandle) -> Result<ManagedCatalog, String> {
                     id: model.id.into(),
                     name: model.name.into(),
                     description: model.description.into(),
+                    base_model_name: model.base_model_name.into(),
+                    base_model_url: model.base_model_url.into(),
+                    bonsai_url: model.bonsai_url.into(),
                     filename: model.filename.into(),
                     size_bytes: model.size,
                     estimated_memory_bytes: model.estimated_memory,
@@ -673,6 +700,13 @@ mod tests {
             assert!(model.filename.ends_with(".gguf"));
             assert_eq!(model.sha256.len(), 64);
             assert!(model.url.starts_with("https://huggingface.co/prism-ml/"));
+            assert!(model
+                .url
+                .starts_with(&format!("{}/resolve/", model.bonsai_url)));
+            assert_eq!(
+                model.base_model_url,
+                format!("https://huggingface.co/Qwen/{}", model.base_model_name)
+            );
             assert!(model.size > 0);
             if let Some(projector) = projector_definition(model) {
                 assert!(projector.filename.ends_with(".gguf"));

@@ -67,6 +67,8 @@ nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-wi
 .model-menu-popover > strong { display: block; padding: 5px 8px 9px; color: #52655a; font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }
 .model-menu-popover > p { margin: 5px 8px 12px; color: #65736a; font-size: 11px; line-height: 1.4; }
 .model-menu-popover .model-menu-error { color: #9a5148; overflow-wrap: anywhere; }
+.model-menu-item { border-radius: 8px; }
+.model-menu-item:hover { background: #f7faf7; }
 .model-menu-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; border: 0; border-radius: 8px; padding: 10px 8px; background: transparent; color: #334139; text-align: left; }
 .model-menu-option:hover:not(:disabled), .model-menu-option:focus-visible { background: #edf5ef; }
 .model-menu-option:disabled { opacity: .5; cursor: default; }
@@ -74,6 +76,7 @@ nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-wi
 .model-menu-option b { overflow: hidden; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
 .model-menu-option small { color: #6d7a70; font-size: 10px; }
 .model-menu-option em { flex: none; color: #37684b; font-size: 10px; font-style: normal; font-weight: 700; }
+.model-menu-item .model-lineage { padding: 0 8px 8px; }
 .model-menu-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; padding-top: 8px; border-top: 1px solid #edf0ec; }
 .model-menu-actions button { border: 0; border-radius: 7px; padding: 7px 8px; background: transparent; color: #37684b; font-size: 10px; font-weight: 700; }
 .model-menu-actions button:hover:not(:disabled) { background: #edf5ef; }
@@ -201,6 +204,13 @@ nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-wi
 .model-card-title strong { color: #2d3f34; font-size: 12px; font-weight: 720; }
 .model-card-title span { border-radius: 999px; padding: 3px 6px; background: #e8f3eb; color: #356649; font-size: 8px; font-weight: 760; text-transform: uppercase; letter-spacing: .04em; }
 .model-card-title small { flex: none; color: #68766d; font-size: 9px; }
+.model-lineage { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 10px; color: #6b786e; font-size: 10px; line-height: 1.35; }
+.model-lineage span { margin-right: auto; }
+.model-lineage a { display: inline-flex; align-items: center; gap: 2px; color: #3d7350; text-decoration: none; white-space: nowrap; }
+.model-lineage a:hover { text-decoration: underline; }
+.model-lineage a:focus-visible { outline: 2px solid #43805a; outline-offset: 2px; border-radius: 2px; }
+.model-lineage .external { width: 11px; height: 11px; }
+.model-card > .model-lineage { margin-top: 6px; }
 .model-card > p { margin: 10px 0; color: #68756d; font-size: 10px; line-height: 1.45; }
 .model-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; color: #59685f; font-size: 9px; }
 .model-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: auto; padding-top: 13px; }

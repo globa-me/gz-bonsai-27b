@@ -265,6 +265,7 @@ Authored icons are outline SVGs with rounded caps and joins, normally 16–20px.
 ### Cards / Containers
 
 - **Corner Style:** System strips and diagnostic groups use 13px corners; the settings form uses 14px corners.
+- **Model provenance:** Place the base Qwen name in one muted line directly below each Bonsai name. Keep the Bonsai and Qwen Hugging Face links short, separate from the model selection or download action, with full accessible names.
 - **Background:** Raised White for editable or grouped information, with a soft tinted surface for the system strip.
 - **Shadow Strategy:** No shadow at rest; use hairline borders and internal dividers.
 - **Internal Padding:** Information rows use 13–16px; the settings card uses 22px (`components.settings-card`).

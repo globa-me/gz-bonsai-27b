@@ -212,7 +212,7 @@ nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-wi
 .model-lineage .external { width: 11px; height: 11px; }
 .model-card > .model-lineage { margin-top: 6px; }
 .model-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 12px; color: #59685f; font-size: 9px; }
-.model-actions { display: flex; flex: none; align-items: flex-end; justify-content: flex-end; gap: 7px; margin-top: auto; padding-top: 13px; }
+.model-actions { display: flex; flex-wrap: wrap; flex: none; align-items: flex-end; justify-content: flex-end; gap: 7px; margin-top: auto; padding-top: 13px; }
 .quiet { border: 1px solid #d9e1da; border-radius: 8px; padding: 7px 10px; background: #f8faf8; color: #3e624c; font-size: 9px; font-weight: 720; }
 .quiet.install { border-color: #bad3c1; background: #edf5ef; color: #2f6849; }
 .quiet.danger { color: #805b51; }
@@ -301,7 +301,7 @@ nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-wi
 .quick-start p { margin: 0; color: #506757; font-size: 12px; }
 .quick-start strong { color: #2b4534; font-size: 13px; }
 .quick-start small { color: #5b6c60; font-size: 11px; line-height: 1.4; }
-.quick-start-actions { flex: none; }
+.quick-start-actions { display: flex; flex: none; flex-wrap: wrap; gap: 8px; }
 .quick-start-actions .primary { min-height: 40px; font-size: 12px; }
 .quick-progress { display: flex; align-items: center; gap: 8px; max-width: 900px; margin: -8px 0 15px; color: #42614b; font-size: 12px; }
 .quick-progress progress { flex: 1; min-width: 50px; accent-color: #43805a; }
@@ -316,3 +316,9 @@ nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-wi
 .model-card-title strong { font-size: 13px; }
 .model-actions .quiet { min-height: 36px; }
 @media (max-width: 1000px) { .quick-start { align-items: stretch; flex-direction: column; } .rag-document-row { grid-template-columns: minmax(0, 1fr) auto; } .rag-document-row .danger { grid-column: 2; } }
+
+.model-removal-dialog { width: min(440px, calc(100vw - 48px)); padding: 24px; border: 1px solid #bfd3c5; border-radius: 16px; background: #fff; color: #254332; }
+.model-removal-dialog::backdrop { background: rgba(22, 39, 28, 0.35); }
+.model-removal-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+.model-removal-dialog p { margin: 0 0 20px; line-height: 1.5; }
+.model-removal-dialog > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }

@@ -169,6 +169,8 @@ pub struct CatalogModel {
     context_size: u32,
     installed: bool,
     installed_path: Option<String>,
+    managed_path: String,
+    managed_projector_path: Option<String>,
     vision_capable: bool,
     projector_installed: bool,
     projector_path: Option<String>,
@@ -301,6 +303,12 @@ pub fn managed_catalog(app: AppHandle) -> Result<ManagedCatalog, String> {
                     context_size: model.context_size,
                     installed,
                     installed_path: installed.then(|| path.display().to_string()),
+                    managed_path: path.display().to_string(),
+                    managed_projector_path: projector.map(|definition| {
+                        projector_path(&root, model, definition)
+                            .display()
+                            .to_string()
+                    }),
                     vision_capable: projector.is_some(),
                     projector_installed: projector_status.as_ref().is_some_and(|value| value.0),
                     projector_path: projector_status.and_then(|value| value.1),
@@ -675,14 +683,60 @@ pub async fn cancel_install(state: State<'_, InstallerState>, id: String) -> Res
 }
 
 #[tauri::command]
-pub async fn remove_model(app: AppHandle, request: ModelRequest) -> Result<(), String> {
+pub(crate) async fn remove_model(
+    app: AppHandle,
+    state: State<'_, InstallerState>,
+    server_state: State<'_, crate::AppState>,
+    request: ModelRequest,
+) -> Result<(), String> {
     let model = model_definition(&request.model_id)?;
-    let root = managed_root(&app)?;
+    // Keep both locks until deletion finishes. start_server and register_download
+    // cannot race with this command even when frontend status is stale.
+    let mut server = server_state.server.lock().await;
+    let child_alive = match server.child.as_mut() {
+        Some(child) => child
+            .try_wait()
+            .map_err(|error| error.to_string())?
+            .is_none(),
+        None => false,
+    };
+    let server_busy = child_alive
+        || matches!(
+            server.status.phase,
+            crate::ServerPhase::Starting | crate::ServerPhase::Ready | crate::ServerPhase::Stopping
+        );
+    let downloads = state.active.lock().await;
+    ensure_removal_allowed(server_busy, &downloads, model.id)?;
+    remove_model_files(&managed_root(&app)?, model).await
+}
+
+fn ensure_removal_allowed(
+    server_busy: bool,
+    downloads: &HashMap<String, Arc<DownloadControl>>,
+    model_id: &str,
+) -> Result<(), String> {
+    if server_busy {
+        return Err("Stop the model before removing model files".into());
+    }
+    if downloads.contains_key(model_id) || downloads.contains_key(&format!("{model_id}-vision")) {
+        return Err(
+            "Wait for the model download to finish or cancel it before removing files".into(),
+        );
+    }
+    Ok(())
+}
+
+async fn remove_model_files(root: &Path, model: ModelDefinition) -> Result<(), String> {
     let directory = root.join("models").join(model.id);
-    if directory.exists() {
-        fs::remove_dir_all(&directory)
+    match fs::symlink_metadata(&directory).await {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err("Model directory must be a regular managed directory".into());
+        }
+        Ok(_) => fs::remove_dir_all(&directory)
             .await
-            .map_err(|error| format!("Could not remove model: {error}"))?;
+            .map_err(|error| format!("Could not remove model: {error}"))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not inspect model directory: {error}")),
     }
     Ok(())
 }
@@ -690,6 +744,74 @@ pub async fn remove_model(app: AppHandle, request: ModelRequest) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removal_rejects_running_server_and_model_or_vision_downloads() {
+        let mut downloads = HashMap::new();
+        assert!(ensure_removal_allowed(true, &downloads, MODELS[0].id).is_err());
+        downloads.insert(MODELS[0].id.into(), Arc::new(DownloadControl::default()));
+        assert!(ensure_removal_allowed(false, &downloads, MODELS[0].id).is_err());
+        downloads.clear();
+        downloads.insert(
+            format!("{}-vision", MODELS[0].id),
+            Arc::new(DownloadControl::default()),
+        );
+        assert!(ensure_removal_allowed(false, &downloads, MODELS[0].id).is_err());
+        assert!(ensure_removal_allowed(false, &downloads, MODELS[1].id).is_ok());
+        assert!(model_definition("../other").is_err());
+    }
+
+    fn removal_fixture() -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "bonsai-remove-test-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    #[tokio::test]
+    async fn removal_deletes_weights_projector_markers_and_partial_only_for_known_model() {
+        let root = removal_fixture();
+        let directory = root.join("models").join(MODELS[0].id);
+        fs::create_dir_all(&directory).await.unwrap();
+        for filename in [
+            MODELS[0].filename,
+            "vision.gguf",
+            "weights.gguf.sha256",
+            "weights.gguf.part",
+        ] {
+            fs::write(directory.join(filename), b"test").await.unwrap();
+        }
+        fs::write(root.join("chats.json"), b"keep").await.unwrap();
+        let other = root.join("models").join(MODELS[1].id);
+        fs::create_dir_all(&other).await.unwrap();
+        fs::write(other.join("keep.gguf"), b"keep").await.unwrap();
+        remove_model_files(&root, MODELS[0]).await.unwrap();
+        assert!(!directory.exists());
+        assert!(other.join("keep.gguf").exists());
+        assert!(root.join("chats.json").exists());
+        remove_model_files(&root, MODELS[0]).await.unwrap();
+        fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn removal_rejects_symlink_and_preserves_external_directory() {
+        let root = removal_fixture();
+        let external = root.join("external");
+        fs::create_dir_all(&external).await.unwrap();
+        fs::write(external.join("keep.gguf"), b"keep")
+            .await
+            .unwrap();
+        fs::create_dir_all(root.join("models")).await.unwrap();
+        std::os::unix::fs::symlink(&external, root.join("models").join(MODELS[0].id)).unwrap();
+        assert!(remove_model_files(&root, MODELS[0]).await.is_err());
+        assert!(external.join("keep.gguf").exists());
+        fs::remove_dir_all(root).await.unwrap();
+    }
 
     #[test]
     fn catalog_ids_are_unique_and_paths_are_flat() {

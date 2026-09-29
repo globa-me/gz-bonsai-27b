@@ -57,6 +57,8 @@ interface CatalogModel {
   contextSize: number;
   installed: boolean;
   installedPath?: string | null;
+  managedPath?: string;
+  managedProjectorPath?: string | null;
   visionCapable?: boolean;
   projectorInstalled?: boolean;
   projectorPath?: string | null;
@@ -122,6 +124,10 @@ function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
 }
 
+function isMissingManagedSelection(path: string, models: CatalogModel[]) {
+  return Boolean(path) && models.some((model) => model.managedPath === path && !model.installed);
+}
+
 function initialLocale(): Locale {
   return navigator.language.toLowerCase().startsWith("ru") ? "ru" : "en";
 }
@@ -146,7 +152,16 @@ function formatDuration(milliseconds: number, locale: Locale) {
 export default function App() {
   const saved = useMemo(() => {
     try {
-      return JSON.parse(localStorage.getItem(storageKey) ?? "{}");
+      const value = JSON.parse(localStorage.getItem(storageKey) ?? "{}");
+      if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+      return {
+        locale: value.locale === "ru" || value.locale === "en" ? value.locale : undefined,
+        runtimePath: typeof value.runtimePath === "string" ? value.runtimePath : "",
+        modelPath: typeof value.modelPath === "string" ? value.modelPath : "",
+        projectorPath: typeof value.projectorPath === "string" ? value.projectorPath : "",
+        contextSize: Number.isInteger(value.contextSize) && value.contextSize >= 1024 && value.contextSize <= 262144 ? value.contextSize : 8192,
+        port: Number.isInteger(value.port) && value.port >= 1024 && value.port <= 65535 ? value.port : 8080,
+      };
     } catch {
       return {};
     }
@@ -161,6 +176,10 @@ export default function App() {
   const [logs, setLogs] = useState<string[]>([]);
   const [chats, setChats] = useState<ChatSession[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  const latestChats = useRef(chats);
+  latestChats.current = chats;
+  const latestActiveChatId = useRef(activeChatId);
+  latestActiveChatId.current = activeChatId;
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [editingChatTitle, setEditingChatTitle] = useState("");
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -201,6 +220,10 @@ export default function App() {
   const [catalog, setCatalog] = useState<ManagedCatalog | null>(null);
   const [activeDownload, setActiveDownload] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<Record<string, DownloadProgress>>({});
+  const [pendingConfirmation, setPendingConfirmation] = useState<{ title: string; description: string; onConfirm: () => void } | null>(null);
+  const [removalCandidate, setRemovalCandidate] = useState<CatalogModel | null>(null);
+  const removingModel = useRef(false);
+  const [removingModelId, setRemovingModelId] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
   const modelMenu = useRef<HTMLDetailsElement | null>(null);
   const modelSwitching = useRef(false);
@@ -262,6 +285,14 @@ export default function App() {
   async function refreshCatalog() {
     const next = await invoke<ManagedCatalog>("managed_catalog");
     setCatalog(next);
+    setProjectorPath((current: string) => next.models.some((model) => model.managedProjectorPath === current && !model.projectorInstalled) ? "" : current);
+    setModelPath((current: string) => {
+      if (isMissingManagedSelection(current, next.models)) {
+        setProjectorPath("");
+        return "";
+      }
+      return current;
+    });
     if (next.runtimePath) {
       setRuntimePath((current: string) => resolveRuntimePath(
         current,
@@ -274,10 +305,9 @@ export default function App() {
   }
 
   useEffect(() => {
-    localStorage.setItem(
-      storageKey,
-      JSON.stringify({ locale, runtimePath, modelPath, projectorPath, contextSize, port }),
-    );
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ locale, runtimePath, modelPath, projectorPath, contextSize, port }));
+    } catch { /* A storage failure must not crash the usable interface. */ }
     document.documentElement.lang = locale;
   }, [locale, runtimePath, modelPath, projectorPath, contextSize, port]);
 
@@ -367,7 +397,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauri) {
-      setSystemInfo({ appVersion: "0.6.5", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
+      setSystemInfo({ appVersion: "0.6.6", architecture: "aarch64", macosVersion: "26.5", chip: "Apple M3 Pro", memoryBytes: 18 * 1024 ** 3, freeDiskBytes: 115 * 1024 ** 3 });
       setCatalog(previewCatalog);
       setRuntimePath(previewCatalog.runtimePath ?? "");
       return;
@@ -403,6 +433,10 @@ export default function App() {
       void unlistenDiagnostic.then((fn) => fn());
     };
   }, []);
+
+  useEffect(() => {
+    if (isTauri && view === "models") void refreshCatalog().catch((error) => setInstallError(String(error)));
+  }, [view]);
 
   useEffect(() => {
     if (!isTauri || status.phase !== "ready") return;
@@ -529,12 +563,14 @@ export default function App() {
       filters: kind === "runtime" ? undefined : [{ name: "GGUF", extensions: ["gguf"] }],
     });
     if (!selected) return;
+    if (modelActionsLocked || removingModel.current) return;
     if (kind === "runtime") setRuntimePath(selected);
     if (kind === "model") setModelPath(selected);
     if (kind === "projector") setProjectorPath(selected);
   }
 
   async function startServer(config = { runtimePath, modelPath, projectorPath, port, contextSize }) {
+    if (removingModel.current || activeDownload) return;
     setLogs([]);
     setStatus({ phase: "starting", port: config.port, modelName: fileName(config.modelPath), detail: t("healthWaiting") });
     try {
@@ -550,6 +586,7 @@ export default function App() {
   }
 
   async function stopServer() {
+    if (removingModel.current) return;
     setStatus({ phase: "stopping", port });
     try {
       setStatus(await invoke<ServerStatus>("stop_server"));
@@ -561,6 +598,7 @@ export default function App() {
   }
 
   async function installManagedModel(model: CatalogModel) {
+    if (modelActionsLocked || removingModel.current) return;
     setInstallError(null);
     setActiveDownload(model.id);
     recordDiagnostic("installer", "info", "model_install_started", `model_id=${model.id}`);
@@ -569,14 +607,18 @@ export default function App() {
       const installedModel = await invoke<string>("install_model", {
         request: { modelId: model.id },
       });
-      const installedProjector = model.visionCapable
-        ? await invoke<string>("install_projector", { request: { modelId: model.id } })
-        : "";
       setRuntimePath(managedRuntime);
       setModelPath(installedModel);
-      setProjectorPath(installedProjector);
+      setProjectorPath("");
       setContextSize(model.contextSize);
+      // The GGUF remains usable for text if vision download is paused or fails.
       await refreshCatalog();
+      if (model.visionCapable) {
+        setActiveDownload(`${model.id}-vision`);
+        const installedProjector = await invoke<string>("install_projector", { request: { modelId: model.id } });
+        setProjectorPath(installedProjector);
+        await refreshCatalog();
+      }
       recordDiagnostic("installer", "info", "model_install_succeeded", `model_id=${model.id}`);
     } catch (error) {
       const message = String(error).toLowerCase();
@@ -604,17 +646,28 @@ export default function App() {
   }
 
   async function removeManagedModel(model: CatalogModel) {
+    if (modelActionsLocked || modelSwitching.current || removingModel.current) return;
+    removingModel.current = true;
+    setRemovingModelId(model.id);
     setInstallError(null);
     try {
       await invoke("remove_model", { request: { modelId: model.id } });
-      if (modelPath === model.installedPath) setModelPath("");
+      if (modelPath === model.installedPath) {
+        setModelPath("");
+        setProjectorPath("");
+      }
       await refreshCatalog();
+      if (isTauri) void invoke<SystemInfo>("system_info").then(setSystemInfo).catch(() => undefined);
     } catch (error) {
       setInstallError(String(error));
+    } finally {
+      removingModel.current = false;
+      setRemovingModelId(null);
     }
   }
 
   async function installManagedProjector(model: CatalogModel) {
+    if (modelActionsLocked || removingModel.current) return;
     setInstallError(null);
     setActiveDownload(`${model.id}-vision`);
     try {
@@ -629,7 +682,7 @@ export default function App() {
   }
 
   function useManagedModel(model: CatalogModel) {
-    if (!model.installedPath || !catalog?.runtimePath) return;
+    if (modelActionsLocked || removingModel.current || !model.installedPath || !catalog?.runtimePath) return;
     setRuntimePath(catalog.runtimePath);
     setModelPath(model.installedPath);
     setProjectorPath(model.projectorPath ?? "");
@@ -637,7 +690,7 @@ export default function App() {
   }
 
   async function selectModelFromChat(model: CatalogModel) {
-    if (!model.installedPath || !catalog?.runtimePath || modelSwitching.current || activeRequest || status.phase === "starting" || status.phase === "stopping") return;
+    if (removingModel.current || activeDownload || !model.installedPath || !catalog?.runtimePath || modelSwitching.current || activeRequest || status.phase === "starting" || status.phase === "stopping") return;
     modelMenu.current?.removeAttribute("open");
     const alreadyRunning = status.phase === "ready" && status.modelName === model.filename;
     if (alreadyRunning) return;
@@ -781,13 +834,12 @@ export default function App() {
   }
 
   async function deleteRagDocument(documentId: string) {
-    if (!activeChat) return;
+    if (!activeChat || activeRequest || ragBusy) return;
     const usedElsewhere = chats.some((chat) => chat.id !== activeChat.id && chat.ragDocumentIds?.includes(documentId));
     if (usedElsewhere) {
       setRagErrorForChat(activeChat.id, t("documentUsedElsewhere"));
       return;
     }
-    if (!window.confirm(t("confirmDeleteDocument"))) return;
     try {
       await invoke("remove_rag_document", { request: { documentId } });
       detachRagDocument(documentId);
@@ -824,19 +876,22 @@ export default function App() {
 
   function deleteChat(chat: ChatSession) {
     if ((ragBusy && ragBusyChatId === chat.id) || (activeRequest && activeRequestChatId.current === chat.id)) return;
-    if (!window.confirm(`${t("confirmDeleteChat")} “${chat.title}”?`)) return;
-    const remaining = chats.filter((item) => item.id !== chat.id);
-    if (activeChatId === chat.id) {
+    const remaining = latestChats.current.filter((item) => item.id !== chat.id);
+    let replacement: ChatSession | undefined;
+    if (latestActiveChatId.current === chat.id) {
       const next = [...remaining].sort((a, b) => b.updatedAt - a.updatedAt)[0]
         ?? createChat(t("untitledChat"));
-      if (!remaining.length) remaining.push(next);
+      if (!remaining.length) replacement = next;
       setActiveChatId(next.id);
       setDraft("");
       setPendingAttachments([]);
       setAttachmentError(null);
       setView("chat");
     }
-    setChats(remaining);
+    setChats((current) => {
+      const kept = current.filter((item) => item.id !== chat.id);
+      return !kept.length && replacement ? [replacement] : kept;
+    });
   }
 
   async function stopGeneration() {
@@ -992,7 +1047,8 @@ export default function App() {
 
   const phaseLabel = status.phase === "ready" ? t("ready") : status.phase === "starting" ? t("starting") : status.phase === "stopping" ? t("stopping") : status.phase === "error" ? t("error") : t("stopped");
   const modelConfigured = Boolean(runtimePath && modelPath);
-  const canStart = modelConfigured && status.phase !== "starting" && status.phase !== "stopping" && status.phase !== "ready";
+  const modelActionsLocked = Boolean(removingModelId || activeDownload || activeRequest || ragBusy || ["ready", "starting", "stopping"].includes(status.phase));
+  const canStart = !removingModelId && !activeDownload && modelConfigured && status.phase !== "starting" && status.phase !== "stopping" && status.phase !== "ready";
   const emptyChatTitle = status.phase === "ready" ? t("chatWelcome")
     : !modelConfigured ? t("chooseModelFirst")
       : status.phase === "starting" ? t("starting")
@@ -1043,7 +1099,7 @@ export default function App() {
               <button className={view === "chat" && activeChatId === chat.id ? "active" : ""} title={chat.title} onClick={() => { setActiveChatId(chat.id); setView("chat"); }}>{chat.title}</button>
               <div className="chat-actions">
                 <button aria-label={`${t("renameChat")}: ${chat.title}`} title={t("renameChat")} onClick={() => startRenamingChat(chat)}>✎</button>
-                <button aria-label={`${t("deleteChat")}: ${chat.title}`} title={t("deleteChat")} onClick={() => deleteChat(chat)} disabled={Boolean((activeRequest && activeRequestChatId.current === chat.id) || (ragBusy && ragBusyChatId === chat.id))}>×</button>
+                <button aria-label={`${t("deleteChat")}: ${chat.title}`} title={t("deleteChat")} onClick={() => setPendingConfirmation({ title: t("confirmDeleteChat"), description: `${t("confirmDeleteChat")} “${chat.title}”?`, onConfirm: () => deleteChat(chat) })} disabled={Boolean((activeRequest && activeRequestChatId.current === chat.id) || (ragBusy && ragBusyChatId === chat.id))}>×</button>
               </div>
             </div>)}</div>
         </div>
@@ -1057,9 +1113,9 @@ export default function App() {
         {sidebarCollapsed && <button className="sidebar-toggle sidebar-toggle-open" onClick={() => setSidebarCollapsed(false)} aria-label={t("showSidebar")} title={t("showSidebar")}><PanelIcon /></button>}
         {isDraggingFiles && <div className="drop-overlay" role="status" aria-live="polite"><FileIcon /><strong>{t("dropFiles")}</strong><span>{t("dropFilesHint")}</span></div>}
         {view === "chat" && <div className="chat-view">
-          <header className="pane-bar"><details className="model-menu" ref={modelMenu} onToggle={(event) => { if (event.currentTarget.open && isTauri) void refreshCatalog().catch((error) => setInstallError(String(error))); }}><summary className="model-picker"><Logo small /><span><small>{t("localModel")}</small>{status.phase === "ready" || status.phase === "starting" || status.phase === "stopping" ? status.modelName ?? t("notSelected") : modelPath ? fileName(modelPath) : t("notSelected")}</span><ChevronIcon /></summary><div className="model-menu-popover"><strong>{t("installedModels")}</strong>{catalog?.models.filter((model) => model.installed && model.installedPath).map((model) => <div className="model-menu-item" key={model.id}><button className="model-menu-option" disabled={Boolean(activeRequest) || status.phase === "starting" || status.phase === "stopping"} onClick={() => void selectModelFromChat(model)}><span><b>{model.name}</b><small>{model.baseModelName} · {formatBytes(model.sizeBytes, locale)} · {model.contextSize / 1024}K</small></span><em>{status.phase === "ready" && status.modelName === model.filename ? t("running") : t("start")}</em></button><ModelLineage model={model} locale={locale} showBase={false} /></div>)}{!catalog?.models.some((model) => model.installed && model.installedPath) && <p>{t("noInstalledModels")}</p>}{status.detail && status.phase === "error" && <p className="model-menu-error">{status.detail}</p>}<div className="model-menu-actions">{status.phase === "ready" && <button onClick={() => { modelMenu.current?.removeAttribute("open"); void stopServer(); }} disabled={Boolean(activeRequest)}>{t("stopModel")}</button>}<button onClick={() => { modelMenu.current?.removeAttribute("open"); setView("models"); }}>{t("manageModels")}</button></div></div></details>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer} disabled={Boolean(activeRequest)}>{t("stopModel")}</button>}</div></details></header>
+          <header className="pane-bar"><details className="model-menu" ref={modelMenu} onToggle={(event) => { if (event.currentTarget.open && isTauri) void refreshCatalog().catch((error) => setInstallError(String(error))); }}><summary className="model-picker"><Logo small /><span><small>{t("localModel")}</small>{status.phase === "ready" || status.phase === "starting" || status.phase === "stopping" ? status.modelName ?? t("notSelected") : modelPath ? fileName(modelPath) : t("notSelected")}</span><ChevronIcon /></summary><div className="model-menu-popover"><strong>{t("installedModels")}</strong>{catalog?.models.filter((model) => model.installed && model.installedPath).map((model) => <div className="model-menu-item" key={model.id}><button className="model-menu-option" disabled={Boolean(removingModelId || activeDownload || activeRequest) || status.phase === "starting" || status.phase === "stopping"} onClick={() => void selectModelFromChat(model)}><span><b>{model.name}</b><small>{model.baseModelName} · {formatBytes(model.sizeBytes, locale)} · {model.contextSize / 1024}K</small></span><em>{status.phase === "ready" && status.modelName === model.filename ? t("running") : t("start")}</em></button><ModelLineage model={model} locale={locale} showBase={false} /></div>)}{!catalog?.models.some((model) => model.installed && model.installedPath) && <p>{t("noInstalledModels")}</p>}{status.detail && status.phase === "error" && <p className="model-menu-error">{status.detail}</p>}<div className="model-menu-actions">{status.phase === "ready" && <button onClick={() => { modelMenu.current?.removeAttribute("open"); void stopServer(); }} disabled={Boolean(activeRequest)}>{t("stopModel")}</button>}<button onClick={() => { modelMenu.current?.removeAttribute("open"); setView("models"); }}>{t("manageModels")}</button></div></div></details>{chatMetrics && <details className="chat-statistics"><summary>{formatCount(chatMetrics.totalTokens, locale)} {t("tokensShort")} · {formatSpeed(chatMetrics.tokensPerSecond, locale)} {t("tokensPerSecond")}</summary><div><InfoRow label={t("responses")} value={formatCount(chatMetrics.responses, locale)} /><InfoRow label={t("promptTokens")} value={formatCount(chatMetrics.promptTokens, locale)} /><InfoRow label={t("outputTokens")} value={formatCount(chatMetrics.completionTokens, locale)} /><InfoRow label={t("totalTokens")} value={formatCount(chatMetrics.totalTokens, locale)} /><InfoRow label={t("averageSpeed")} value={`${formatSpeed(chatMetrics.tokensPerSecond, locale)} ${t("tokensPerSecond")}`} /><InfoRow label={t("totalTime")} value={formatDuration(chatMetrics.elapsedMs, locale)} /></div></details>}<details className="status-menu"><summary className={`status ${status.phase}`}><i /><span>{phaseLabel}</span><ChevronIcon /></summary><div className="status-popover"><InfoRow label={t("currentModel")} value={status.modelName ?? (modelPath ? fileName(modelPath) : t("notSelected"))} /><InfoRow label={t("backend")} value={status.backend?.includes("llama.cpp · Metal") ? t("metalBackend") : (status.backend ?? t("metalBackend"))} /><InfoRow label={t("processMemory")} value={status.memoryBytes ? formatBytes(status.memoryBytes, locale) : "—"} /><InfoRow label={t("context")} value={status.contextSize ? `${Math.round(status.contextSize / 1024)}K` : "—"} /><InfoRow label="Endpoint" value={`127.0.0.1:${status.port}`} />{status.phase === "ready" && <button className="stop-inline" onClick={stopServer} disabled={Boolean(activeRequest)}>{t("stopModel")}</button>}</div></details></header>
           <div className={`conversation ${messages.length === 0 ? "is-empty" : ""}`}>
-            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{emptyChatTitle}</h1>{canStart ? <button onClick={() => void startServer()}>{t("start")}</button> : !modelConfigured && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => {
+            {messages.length === 0 ? <div className="welcome"><Logo /><h1>{emptyChatTitle}</h1>{canStart ? <button disabled={!canStart} onClick={() => void startServer()}>{t("start")}</button> : !modelConfigured && <button onClick={() => setView("models")}>{t("openModels")}</button>}</div> : messages.map((message) => {
               const sources = ephemeralSources[message.id] ?? message.sources;
               return <article className={`message ${message.role}`} key={message.id}>
                 <div className="avatar">{message.role === "user" ? "GZ" : <Logo small />}</div>
@@ -1076,7 +1132,7 @@ export default function App() {
             })}
           </div>
           <div className="composer-wrap">
-            {ragDocuments.length ? <details className="rag-documents"><summary>{t("ragReady").replace("{count}", String(ragDocuments.length))}</summary><div>{ragDocuments.map((document) => <div className="rag-document-row" key={document.id}><strong>{document.name}</strong><button disabled={Boolean(activeRequest)} onClick={() => detachRagDocument(document.id)} aria-label={`${t("detachRagDocument")}: ${document.name}`}>{t("detachRagDocument")}</button><button className="danger" disabled={Boolean(activeRequest)} onClick={() => void deleteRagDocument(document.id)} aria-label={`${t("deleteLocalDocument")}: ${document.name}`}>{t("deleteLocalDocument")}</button></div>)}</div></details> : null}
+            {ragDocuments.length ? <details className="rag-documents"><summary>{t("ragReady").replace("{count}", String(ragDocuments.length))}</summary><div>{ragDocuments.map((document) => <div className="rag-document-row" key={document.id}><strong>{document.name}</strong><button disabled={Boolean(activeRequest)} onClick={() => detachRagDocument(document.id)} aria-label={`${t("detachRagDocument")}: ${document.name}`}>{t("detachRagDocument")}</button><button className="danger" disabled={Boolean(activeRequest) || ragBusy} onClick={() => setPendingConfirmation({ title: t("deleteLocalDocument"), description: t("confirmDeleteDocument"), onConfirm: () => void deleteRagDocument(document.id) })} aria-label={`${t("deleteLocalDocument")}: ${document.name}`}>{t("deleteLocalDocument")}</button></div>)}</div></details> : null}
             {pendingFileChoicePaths.length ? <div className="file-choice" role="status"><span>{t("dropScopeQuestion")}</span><button disabled={status.phase !== "ready" || ragBusy} onClick={() => { void addAttachmentsFromPaths(pendingFileChoicePaths); setPendingFileChoice(null); }}>{t("toMessage")}</button><button disabled={ragBusy} onClick={() => { void importRagDocuments(pendingFileChoicePaths); setPendingFileChoice(null); }}>{t("toChat")}</button><button onClick={() => setPendingFileChoice(null)}>{t("cancel")}</button></div> : null}
             {pendingAttachments.length ? <div className="pending-attachments">{pendingAttachments.map((attachment) => <span key={attachment.id}>{attachment.kind === "image" ? <img src={attachment.content} alt="" /> : <FileIcon />}<span>{attachment.name}</span><button onClick={() => setPendingAttachments((current) => current.filter((item) => item.id !== attachment.id))} aria-label={t("removeAttachment")}>×</button></span>)}</div> : null}
             {(attachmentError || ragError || searchError) && <div className="composer-error" role="alert"><span>{searchError || attachmentError || ragError}</span>{(ragError || searchError) && (draft.trim() || pendingAttachments.length) && status.phase === "ready" && !activeRequest && <button onClick={() => void sendMessage()}>{t("retryRequest")}</button>}</div>}
@@ -1096,12 +1152,13 @@ export default function App() {
         {view === "models" && <div className="content-page">
           <header className="page-heading"><div><h1>{t("modelsTitle")}</h1></div><div className={`status ${status.phase}`}><i /><span>{phaseLabel}</span></div></header>
           <div className="system-strip"><div><small>{t("system")}</small><strong>{systemInfo?.chip ?? "—"}</strong><span>{systemInfo?.architecture ?? "—"} · macOS {systemInfo?.macosVersion ?? "—"}</span></div><div><small>{t("memory")}</small><strong>{formatBytes(systemInfo?.memoryBytes ?? 0, locale)}</strong></div><div><small>{t("disk")}</small><strong>{formatBytes(systemInfo?.freeDiskBytes ?? 0, locale)}</strong></div></div>
-          {customModelSelected ? <section className="quick-start"><div><h2>{t("advancedSetup")}</h2><strong>{fileName(modelPath)}</strong></div><div className="quick-start-actions">{status.phase === "ready" ? <button className="primary" onClick={() => setView("chat")}>{t("openChat")}</button> : <button className="primary" disabled={!canStart} onClick={() => void startServer()}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div></section> : quickStartModel && <section className="quick-start"><div><h2>{t("firstRunTitle")}</h2><strong>{quickStartModel.name}</strong><ModelLineage model={quickStartModel} locale={locale} /></div><div className="quick-start-actions">{status.phase === "ready" ? <button className="primary" onClick={() => setView("chat")}>{t("openChat")}</button> : !quickStartModel.installed ? <button className="primary" disabled={Boolean(activeDownload)} onClick={() => void installManagedModel(quickStartModel)}>{downloadProgress[quickStartModel.id]?.phase === "paused" ? t("resume") : t("install")}</button> : modelPath !== quickStartModel.installedPath ? <button className="primary" onClick={() => useManagedModel(quickStartModel)}>{t("useModel")}</button> : <button className="primary" disabled={!canStart} onClick={() => void startServer()}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div></section>}
+          {customModelSelected ? <section className="quick-start"><div><h2>{t("advancedSetup")}</h2><strong>{fileName(modelPath)}</strong></div><div className="quick-start-actions">{status.phase === "ready" ? <><button className="primary" onClick={() => setView("chat")}>{t("openChat")}</button><button className="quiet" onClick={() => void stopServer()} disabled={Boolean(activeRequest)}>{t("stopModel")}</button></> : <button className="primary" disabled={!canStart} onClick={() => void startServer()}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div></section> : quickStartModel && <section className="quick-start"><div><h2>{t("firstRunTitle")}</h2><strong>{quickStartModel.name}</strong><ModelLineage model={quickStartModel} locale={locale} /></div><div className="quick-start-actions">{status.phase === "ready" ? <><button className="primary" onClick={() => setView("chat")}>{t("openChat")}</button><button className="quiet" onClick={() => void stopServer()} disabled={Boolean(activeRequest)}>{t("stopModel")}</button></> : !quickStartModel.installed ? <button className="primary" disabled={modelActionsLocked} onClick={() => void installManagedModel(quickStartModel)}>{downloadProgress[quickStartModel.id]?.phase === "paused" ? t("resume") : t("install")}</button> : modelPath !== quickStartModel.installedPath ? <button className="primary" disabled={modelActionsLocked} onClick={() => useManagedModel(quickStartModel)}>{t("useModel")}</button> : <button className="primary" disabled={!canStart} onClick={() => void startServer()}>{status.phase === "starting" ? t("starting") : t("start")}</button>}</div></section>}
           {!customModelSelected && quickStartModel && activeDownload === quickStartModel.id && <div className="quick-progress" role="status"><span>{t("downloading")} {downloadProgress[quickStartModel.id]?.totalBytes ? Math.round((downloadProgress[quickStartModel.id].downloadedBytes / downloadProgress[quickStartModel.id].totalBytes) * 100) : 0}%</span><progress max="100" value={downloadProgress[quickStartModel.id]?.totalBytes ? (downloadProgress[quickStartModel.id].downloadedBytes / downloadProgress[quickStartModel.id].totalBytes) * 100 : 0} /><button onClick={() => void pauseDownload(quickStartModel.id)}>{t("pause")}</button><button onClick={() => void cancelDownload(quickStartModel.id)}>{t("cancel")}</button></div>}
           <section className="endpoint-card"><div><small>{t("openAiEndpoint")}</small><strong>http://127.0.0.1:{port}/v1</strong></div><div><span className={`endpoint-state ${status.phase === "ready" ? "ready" : ""}`}>{status.phase === "ready" ? t("available") : t("offline")}</span><button className="quiet" onClick={copyEndpoint}>{endpointCopied ? t("endpointCopied") : t("copyEndpoint")}</button></div></section>
           <section className="catalog-section">
             <div className="section-heading"><div><h2>{t("catalogTitle")}</h2><p>{t("catalogDescription")}</p></div>{catalog && <span className={`runtime-pill ${catalog.runtimeInstalled ? "ready" : ""}`}>{catalog.runtimeInstalled ? t("runtimeIncluded") : t("runtimeMissing")}</span>}</div>
-            <details className="other-models"><summary><span>{t("otherModels")}</span><ChevronIcon /></summary><div className="model-grid">{catalog?.models.filter((model) => model.id !== quickStartModel?.id).map((model) => {
+            {["ready", "starting", "stopping"].includes(status.phase) && <p>{t("removeModelHint")}</p>}
+            <details className="other-models" open><summary><span>{t("otherModels")}</span><ChevronIcon /></summary><div className="model-grid">{catalog?.models.map((model) => {
               const isActive = activeDownload === model.id || activeDownload === `${model.id}-vision`;
               const progress = downloadProgress[activeDownload === `${model.id}-vision` ? `${model.id}-vision` : model.id];
               const percent = progress?.totalBytes ? Math.min(100, Math.round(progress.downloadedBytes / progress.totalBytes * 100)) : 0;
@@ -1111,12 +1168,12 @@ export default function App() {
                 <ModelLineage model={model} locale={locale} />
                 <div className="model-meta"><span>{t("memoryEstimate")}: {formatBytes(model.estimatedMemoryBytes, locale)}+</span><span>{t("context")}: {model.contextSize / 1024}K</span><span>{model.visionCapable ? t("textAndImages") : t("textOnly")}</span></div>
                 {isActive && progress && <div className="download-state"><div><span>{progress.phase === "verifying" ? t("verifying") : t("downloading")}</span><strong>{percent}%</strong></div><progress max="100" value={percent} /></div>}
-                <div className="model-actions">{isActive ? <><button className="quiet" onClick={() => activeDownload && pauseDownload(activeDownload)}>{t("pause")}</button><button className="quiet danger" onClick={() => activeDownload && cancelDownload(activeDownload)}>{t("cancel")}</button></> : model.installed ? <>{model.visionCapable && !model.projectorInstalled && <button className="quiet install" onClick={() => installManagedProjector(model)}>{t("installVision")}</button>}<button className="quiet" onClick={() => useManagedModel(model)} disabled={selected}>{selected ? t("selected") : t("useModel")}</button><button className="quiet danger" onClick={() => removeManagedModel(model)} disabled={status.phase === "ready" || selected}>{t("remove")}</button></> : <button className="quiet install" onClick={() => installManagedModel(model)} disabled={Boolean(activeDownload)}>{progress?.phase === "paused" ? t("resume") : t("install")}</button>}</div>
+                <div className="model-actions">{isActive ? <><button className="quiet" onClick={() => activeDownload && pauseDownload(activeDownload)}>{t("pause")}</button><button className="quiet danger" onClick={() => activeDownload && cancelDownload(activeDownload)}>{t("cancel")}</button></> : model.installed ? <>{model.visionCapable && !model.projectorInstalled && <button className="quiet install" onClick={() => installManagedProjector(model)} disabled={modelActionsLocked}>{downloadProgress[`${model.id}-vision`]?.phase === "paused" ? t("resume") : t("installVision")}</button>}<button className="quiet" onClick={() => useManagedModel(model)} disabled={selected || modelActionsLocked}>{selected ? t("selected") : t("useModel")}</button><button className="quiet danger" onClick={() => setRemovalCandidate(model)} disabled={modelActionsLocked}>{removingModelId === model.id ? t("removingModel") : t("remove")}</button></> : <button className="quiet install" onClick={() => installManagedModel(model)} disabled={modelActionsLocked}>{progress?.phase === "paused" ? t("resume") : t("install")}</button>}</div>
               </article>;
             })}</div></details>
-            {installError && <p className="status-detail">{installError}</p>}
+            {installError && <p className="status-detail" role="alert">{installError}</p>}
           </section>
-          <details className="manual-setup"><summary>{t("advancedSetup")}</summary><section className="settings-form"><FileField label={t("runtime")} value={runtimePath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("runtime")} /><FileField label={t("model")} value={modelPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("model")} /><FileField label={t("projector")} value={projectorPath} empty={t("notSelected")} choose={t("choose")} onChoose={() => chooseFile("projector")} /><div className="field-row"><label>{t("context")}<select value={contextSize} onChange={(event) => setContextSize(Number(event.target.value))} disabled={status.phase === "ready"}><option value={4096}>4K</option><option value={8192}>8K</option><option value={16384}>16K</option><option value={32768}>32K</option></select></label><label>{t("port")}<input type="number" min={1024} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} disabled={status.phase === "ready"} /></label></div><div className="compatibility-note"><strong>{t("compatibleNote")}</strong><span>{t("manualNote")}</span></div></section></details>
+          <details className="manual-setup"><summary>{t("advancedSetup")}</summary><section className="settings-form"><FileField label={t("runtime")} value={runtimePath} empty={t("notSelected")} choose={t("choose")} disabled={modelActionsLocked} onChoose={() => chooseFile("runtime")} /><FileField label={t("model")} value={modelPath} empty={t("notSelected")} choose={t("choose")} disabled={modelActionsLocked} onChoose={() => chooseFile("model")} /><FileField label={t("projector")} value={projectorPath} empty={t("notSelected")} choose={t("choose")} disabled={modelActionsLocked} onChoose={() => chooseFile("projector")} /><div className="field-row"><label>{t("context")}<select value={contextSize} onChange={(event) => setContextSize(Number(event.target.value))} disabled={modelActionsLocked}><option value={4096}>4K</option><option value={8192}>8K</option><option value={16384}>16K</option><option value={32768}>32K</option></select></label><label>{t("port")}<input type="number" min={1024} max={65535} value={port} onChange={(event) => setPort(Number(event.target.value))} disabled={modelActionsLocked} /></label></div><div className="compatibility-note"><strong>{t("compatibleNote")}</strong><span>{t("manualNote")}</span></div></section></details>
           {status.detail && <p className="status-detail model-status">{status.detail}</p>}{(status.phase === "ready" || status.phase === "stopping") && <div className="form-actions model-start"><button className="primary stop" onClick={stopServer} disabled={status.phase === "stopping"}>{t("stop")}</button></div>}
         </div>}
         {view === "diagnostics" && <div className="content-page narrow">
@@ -1134,12 +1191,32 @@ export default function App() {
         </div>}
         {view === "about" && <div className="content-page narrow about-page"><Logo /><h1>{t("aboutTitle")}</h1><p>{t("aboutText")}</p><div className="about-links"><ExternalLink href="https://zakharov.asia/ru/">{t("website")} <ExternalIcon /></ExternalLink><ExternalLink href="https://github.com/globa-me/gz-bonsai-27b">{t("sourceCode")} <ExternalIcon /></ExternalLink></div><small>{t("developedBy")}</small></div>}
       </section>
+      {removalCandidate && <ConfirmationDialog title={`${t("remove")} ${removalCandidate.name}`} description={t("confirmRemoveModel").replace("{model}", removalCandidate.name)} locale={locale} busy={modelActionsLocked} onClose={() => setRemovalCandidate(null)} onConfirm={() => {
+        const model = removalCandidate;
+        setRemovalCandidate(null);
+        void removeManagedModel(model);
+      }} />}
+      {pendingConfirmation && <ConfirmationDialog title={pendingConfirmation.title} description={pendingConfirmation.description} locale={locale} busy={false} onClose={() => setPendingConfirmation(null)} onConfirm={() => {
+        const action = pendingConfirmation.onConfirm;
+        setPendingConfirmation(null);
+        action();
+      }} />}
     </main>
   );
 }
 
-function FileField({ label, value, empty, choose, onChoose }: { label: string; value: string; empty: string; choose: string; onChoose: () => void }) {
-  return <div className="file-field"><label>{label}</label><button onClick={onChoose}><span className={value ? "" : "placeholder"}>{value ? fileName(value) : empty}</span><strong>{choose}</strong></button></div>;
+function ConfirmationDialog({ title, description, locale, busy, onClose, onConfirm }: { title: string; description: string; locale: Locale; busy: boolean; onClose: () => void; onConfirm: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { dialog.current?.showModal(); }, []);
+  return <dialog className="model-removal-dialog" ref={dialog} role="alertdialog" aria-labelledby="confirmation-title" aria-describedby="confirmation-description" onCancel={onClose}>
+    <h2 id="confirmation-title">{title}</h2>
+    <p id="confirmation-description">{description}</p>
+    <div><button className="quiet" autoFocus onClick={onClose}>{translate(locale, "cancel")}</button><button className="quiet danger" disabled={busy} onClick={onConfirm}>{translate(locale, "remove")}</button></div>
+  </dialog>;
+}
+
+function FileField({ label, value, empty, choose, onChoose, disabled }: { label: string; value: string; empty: string; choose: string; onChoose: () => void; disabled?: boolean }) {
+  return <div className="file-field"><label>{label}</label><button onClick={onChoose} disabled={disabled}><span className={value ? "" : "placeholder"}>{value ? fileName(value) : empty}</span><strong>{choose}</strong></button></div>;
 }
 
 function GeneratingIndicator({ label }: { label: string }) {

@@ -31,7 +31,7 @@ struct ManagedServer {
     status: ServerStatus,
 }
 
-struct AppState {
+pub(crate) struct AppState {
     server: Mutex<ManagedServer>,
     client: reqwest::Client,
     chat_requests: Mutex<ChatRequests>,

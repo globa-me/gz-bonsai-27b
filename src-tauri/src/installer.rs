@@ -762,12 +762,15 @@ mod tests {
     }
 
     fn removal_fixture() -> PathBuf {
+        // Some CI clocks have coarse resolution; concurrent tests need a counter too.
+        static NEXT_FIXTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let sequence = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "bonsai-remove-test-{}-{unique}",
+            "bonsai-remove-test-{}-{unique}-{sequence}",
             std::process::id()
         ))
     }

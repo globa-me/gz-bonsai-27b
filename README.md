@@ -11,7 +11,7 @@
 
 ## Скачать
 
-[Скачать GZ Bonsai 27B 0.6.6 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.6.6/GZ-Bonsai-27B-0.6.6-arm64.dmg) — подписанный и нотариально заверенный DMG. Перетащите приложение в папку Applications и работайте на здоровье :-).
+[Скачать GZ Bonsai 27B 0.6.6 для Apple Silicon](https://github.com/globa-me/gz-bonsai-27b/releases/download/v0.6.6/GZ-Bonsai-27B-0.6.6-arm64-G2.dmg) — DMG с подписью Developer ID Application от G2 и нотарификацией Apple (перевыпуск 2 октября 2026). Перетащите приложение в папку Applications и работайте на здоровье :-).
 
 Совместимый runtime уже находится внутри приложения. Откройте «Модели», скачайте выбранный вариант и запустите локальный чат.
 

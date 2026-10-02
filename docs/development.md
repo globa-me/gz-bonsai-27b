@@ -36,6 +36,8 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D w
 
 ## Apple signing и notarization
 
+Переход выпуска на G2 и актуальный статус: [macos-g2-signing.md](macos-g2-signing.md). Подписанный релиз собирается через `python3 scripts/build-macos-g2.py`; скрипт проверяет issuer G2 и выбирает точный SHA-1.
+
 Несекретные параметры релиза:
 
 - Developer ID: `Developer ID Application: Gennadiy Zakharov (BN3D9H4C7J)`;
@@ -49,7 +51,7 @@ cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D w
 xcrun notarytool history --keychain-profile "GZB-notary"
 ```
 
-Tauri подписывает app bundle и DMG через доступный сертификат Developer ID. После сборки DMG нужно переименовать с генерируемого суффикса `_x64` в `-arm64`: на Apple Silicon текущий bundler использует ошибочное имя файла, хотя `file Contents/MacOS/bonsai-desktop` подтверждает arm64.
+Для релиза Tauri получает проверенный SHA-1 G2 из release script. Обычный `tauri build` без этого скрипта не считается подписанным релизом. После сборки DMG нужно переименовать с генерируемого суффикса `_x64` в `-arm64`: на Apple Silicon текущий bundler использует ошибочное имя файла, хотя `file Contents/MacOS/bonsai-desktop` подтверждает arm64.
 
 Финальная последовательность:
 

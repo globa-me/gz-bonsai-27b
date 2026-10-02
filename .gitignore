@@ -8,3 +8,4 @@ src-tauri/target/
 .playwright-cli/
 output/
 .impeccable/review/
+scripts/__pycache__/

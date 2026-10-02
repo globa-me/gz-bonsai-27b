@@ -35,13 +35,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["runtime/"],
+    "resources": [
+      "runtime/"
+    ],
     "copyright": "© 2026 Gennadiy Zakharov",
     "shortDescription": "Простой локальный запуск моделей Bonsai",
     "longDescription": "GZ Bonsai 27B помогает выбрать, запустить и использовать модели PrismML локально на Mac.",
     "macOS": {
       "minimumSystemVersion": "13.0",
-      "signingIdentity": "Developer ID Application: Gennadiy Zakharov (BN3D9H4C7J)",
+      "signingIdentity": null,
       "hardenedRuntime": true
     }
   }
